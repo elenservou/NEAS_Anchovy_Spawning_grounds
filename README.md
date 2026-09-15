@@ -47,7 +47,7 @@ This folder contains the data required for the analyses.
 
   The data used in this study were collected within the framework of the Greek National Program for the Collection of Fisheries Data, co-funded by the Greek Ministry of Rural Development and Food and the European Union.
 
-* **`Greece_geology/`**
+* **`Greece_geology.zip/`**
   Contains shapefiles representing:
 
   * the coastline of Greece (`Greece`);

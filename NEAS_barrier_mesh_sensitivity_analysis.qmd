@@ -1,0 +1,540 @@
+---
+title: "sdmTMB Anchovy eggs Aegean barrier Mesh sensitivity -All_original "
+author: "Eleni Servou"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-float: true
+    code-fold: true         
+    code-summary: "Hide/Show "
+    code-tools:
+      toggle: true                
+---
+
+## Load libraries and prepare data
+```{r,message=FALSE, warning=F}
+# Load packages
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(mapdata)
+library(cowplot)
+library(rnaturalearth)
+library(rnaturalearthdata) 
+library(sf)
+library(sp)
+library(sdmTMB, lib.loc = "C:/Users/ELENI/AppData/Local/R/sdmTMB074") #Load version 0.7.4
+packageVersion("sdmTMB")
+library(sdmTMBextra,lib.loc = "C:/Users/ELENI/AppData/Local/R/sdmTMBextra0.0.4") #Load version 0.0.4
+packageVersion("sdmTMBextra")
+library(INLA)
+library(DHARMa)
+library(gstat)
+library(readxl)
+library(gt)
+library(visreg)
+library(ggeffects)
+library(cli)
+```
+
+```{r}
+#Data set (Eggs and potential covatiates) 
+data.eggs <- read_xlsx("data/data_glmm.xlsx",na = c("NA"))
+data.eggs<- data.eggs %>% mutate(station = factor(station))
+data.eggs <- add_utm_columns(data.eggs, c("lon", "lat"), ll_crs = "WGS84", utm_crs = 32635,  units = "km") #Project coordinates to km
+data.eggs$time<- as.integer(data.eggs$Year)  
+data.eggs$Year <- as.factor(data.eggs$Year)
+```
+
+```{r}
+#Data for maps
+#Coastline
+coast <- st_read("data/Greece_geology/Greece/land_poly_GR.gpkg",quiet = TRUE) %>%  st_transform(crs = "WGS84") 
+coast_km<-  st_transform(coast, crs = 32635);  
+st_geometry(coast_km) <- st_geometry(coast_km) / 1000  
+```
+
+## Mesh sensitivity analysis 
+Because the area have several islands and a complex coastline we will implement a barrier mesh. 
+ 
+To optimize mesh characteristics, we followed the empirical recommendations of Zuur et al. (2017), Zuur & Ieno (2018) and H. Baka repository (https://haakonbakkagit.github.io/, accessed 30-09-2025). Specifically, 
+ 
+The cutoff distance should be approximately 1/5 of the max.edge of the inner area.
+The max.edge can be approximated as 1/5 of an expected/guessed autocorrelation range.
+The resolution of the outer area can be lower, with a general recommended inner-to-outer ratio of 1:5. 
+Offset is recommended to extend to 2/3 of the expected range.
+
+We run a sensitivity analysis to select the optimal mesh.
+
+First we assume an expected/guessed autocorrelation range of 23nmi (42.5Km) and flowing the above recommendations we fit
+M0:log(μs,t) = αt + ωs + εs,t 
+
+For 42.5km assumed range max.edge=8.51 km
+
+Following we fitted the same model with several meshes of higher and lower resolutions:
+  max.edge= 3 km
+  max.edge= 5 km
+  max.edge= 10 km
+  max.edge= 15 km
+  max.edge= 20 km
+
+Models are compared using the AIC criterion and the mesh that resulted to the model fit with the lower AIC was selected for the main a analysis.
+
+First we fit the meshes
+```{r}
+poly.coast <- coast  # Greek shp WGS84
+stations_sf <- st_as_sf(data.eggs, coords = c("lon","lat"), crs = 4326)
+
+# Plot points for check
+plot(stations_sf$geometry, pch=19, col=2)
+
+# Create a convex hull polygon around all stations
+transect_poly <- st_convex_hull(st_union(stations_sf))
+
+# Buffer around the transect polygon (e.g., 0.1 degrees ~ ~10km depending on latitude)
+buff <- st_buffer(transect_poly, dist = 10000)  # WGS84 degrees; or use UTM for meters
+
+# Plot the buffer
+plot(buff, col = "lightblue", border = "blue")
+plot(stations_sf$geometry, add = TRUE, pch = 19, col = 2)
+ 
+output = st_intersection(buff,poly.coast)
+plot(output,col=3)
+domain = st_difference(transect_poly,st_union(output))
+domain = st_sf(domain)
+
+domain_utm <- st_transform(domain, "+init=epsg:32635 +units=km")
+plot(domain_utm,col=4,axes=T)
+plot(data.eggs$X, data.eggs$Y, pch="+",add=T)
+```
+
+### bspde3 - assumed range 3km
+```{r}
+# build the mesh with coastline
+max.edge = 3 #km 
+bound.outer = 10
+mesh_high = inla.mesh.2d(
+                         boundary = domain_utm,
+                         loc = cbind(data.eggs$X, data.eggs$Y),
+                         max.edge = c(1,5)*max.edge,
+                         cutoff = max.edge/5,
+                         offset = c(max.edge, bound.outer)
+                         )
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+mesh_high <- make_mesh(data.eggs, c("X", "Y"), mesh = mesh_high)
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+# Add on the barrier mesh component
+poly.coast_utm <- st_transform(poly.coast, "+init=epsg:32635 +units=km")
+bspde <- add_barrier_mesh(
+  spde_obj = mesh_high,
+  barrier_sf = poly.coast_utm,
+  range_fraction = 0.1,
+  proj_scaling = 1,
+  plot = TRUE)
+
+plot(bspde, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+#We can make a more advanced plot if we want:
+mesh_df_water <- bspde$mesh_sf[bspde$normal_triangles, ]
+mesh_df_land <- bspde$mesh_sf[bspde$barrier_triangles, ]
+
+xlims2 <- c(200,400)
+ylims2 <- c(4350,4550)
+
+ggplot(poly.coast_utm) +
+  geom_sf() +
+  geom_sf(data = mesh_df_water, size = .1, colour = "blue") +
+  geom_sf(data = mesh_df_land, size = .1, colour = "green") +
+  coord_sf(xlim = xlims2, ylim = ylims2)
+
+bspde3 <- bspde
+```
+
+
+### bspde5
+```{r}
+# build the mesh with coastline
+max.edge = 5 #km 
+bound.outer = 16.6
+mesh_high = inla.mesh.2d(
+                         boundary = domain_utm,
+                         loc = cbind(data.eggs$X, data.eggs$Y),
+                         max.edge = c(1,5)*max.edge,
+                         cutoff = max.edge/5,
+                         offset = c(max.edge, bound.outer)
+                         )
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+mesh_high <- make_mesh(data.eggs, c("X", "Y"), mesh = mesh_high)
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+
+# Add on the barrier mesh component
+poly.coast_utm <- st_transform(poly.coast, "+init=epsg:32635 +units=km")
+bspde <- add_barrier_mesh(
+  spde_obj = mesh_high,
+  barrier_sf = poly.coast_utm,
+  range_fraction = 0.1,
+  proj_scaling = 1,
+  plot = TRUE
+  )
+
+plot(bspde, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+#We can make a more advanced plot if we want:
+mesh_df_water <- bspde$mesh_sf[bspde$normal_triangles, ]
+mesh_df_land <- bspde$mesh_sf[bspde$barrier_triangles, ]
+
+xlims2 <- c(200,400)
+ylims2 <- c(4350,4550)
+
+ggplot(poly.coast_utm) +
+  geom_sf() +
+  geom_sf(data = mesh_df_water, size = .1, colour = "blue") +
+  geom_sf(data = mesh_df_land, size = .1, colour = "green") +
+  coord_sf(xlim = xlims2, ylim = ylims2)
+
+bspde5<- bspde
+```
+### range_based
+```{r}
+# build the mesh with coastline
+range_est<-  (23*1.85) # estimated egg variogram range ~23nm = *1.85 Km*
+
+max.edge =range_est/5 #max.edge is smaller than 1/5 of the range  #max.edge:  8.51 km
+bound.outer = range_est*(2/3)
+#bound.outer   28.36667 km
+
+mesh_high = inla.mesh.2d(
+                         boundary = domain_utm,
+                         loc = cbind(data.eggs$X, data.eggs$Y),
+                         max.edge = c(1,5)*max.edge,
+                         cutoff = max.edge/5,
+                         offset = c(max.edge, bound.outer)
+                         )
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+mesh_high <- make_mesh(data.eggs, c("X", "Y"), mesh = mesh_high)
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+# Add on the barrier mesh component
+poly.coast_utm <- st_transform(poly.coast, "+init=epsg:32635 +units=km")
+bspde <- add_barrier_mesh(
+  spde_obj = mesh_high,
+  barrier_sf = poly.coast_utm,
+  range_fraction = 0.1,
+  proj_scaling = 1,
+  plot = TRUE
+)
+
+plot(bspde, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+#We can make a more advanced plot if we want:
+mesh_df_water <- bspde$mesh_sf[bspde$normal_triangles, ]
+mesh_df_land <- bspde$mesh_sf[bspde$barrier_triangles, ]
+
+xlims2 <- c(200,400)
+ylims2 <- c(4350,4550)
+
+ggplot(poly.coast_utm) +
+  geom_sf() +
+  geom_sf(data = mesh_df_water, size = .1, colour = "blue") +
+  geom_sf(data = mesh_df_land, size = .1, colour = "green") +
+  coord_sf(xlim = xlims2, ylim = ylims2)
+
+bspde_range_b<- bspde
+```
+
+### bspde10
+```{r}
+# build the mesh with coastline
+max.edge = 10 #km 
+bound.outer = 33.3
+mesh_high = inla.mesh.2d(
+                         boundary = domain_utm,
+                         loc = cbind(data.eggs$X, data.eggs$Y),
+                         max.edge = c(1,5)*max.edge,
+                         cutoff = max.edge/5,
+                         offset = c(max.edge, bound.outer)
+                         )
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+mesh_high <- make_mesh(data.eggs, c("X", "Y"), mesh = mesh_high)
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+
+# Add on the barrier mesh component
+poly.coast_utm <- st_transform(poly.coast, "+init=epsg:32635 +units=km")
+bspde <- add_barrier_mesh(
+  spde_obj = mesh_high,
+  barrier_sf = poly.coast_utm,
+  range_fraction = 0.1,
+  proj_scaling = 1,
+  plot = TRUE
+)
+
+plot(bspde, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+#We can make a more advanced plot if we want:
+mesh_df_water <- bspde$mesh_sf[bspde$normal_triangles, ]
+mesh_df_land <- bspde$mesh_sf[bspde$barrier_triangles, ]
+
+xlims2 <- c(200,400)
+ylims2 <- c(4350,4550)
+
+ggplot(poly.coast_utm) +
+  geom_sf() +
+  geom_sf(data = mesh_df_water, size = .1, colour = "blue") +
+  geom_sf(data = mesh_df_land, size = .1, colour = "green") +
+  coord_sf(xlim = xlims2, ylim = ylims2)
+
+
+bspde10<- bspde
+```
+
+### bspde15
+```{r}
+# build the mesh with coastline
+max.edge = 15 #km 
+bound.outer = 50
+mesh_high = inla.mesh.2d(
+                         boundary = domain_utm,
+                         loc = cbind(data.eggs$X, data.eggs$Y),
+                         max.edge = c(1,5)*max.edge,
+                         cutoff = max.edge/5,
+                         offset = c(max.edge, bound.outer)
+                         )
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+mesh_high <- make_mesh(data.eggs, c("X", "Y"), mesh = mesh_high)
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+
+# Add on the barrier mesh component
+poly.coast_utm <- st_transform(poly.coast, "+init=epsg:32635 +units=km")
+bspde <- add_barrier_mesh(
+  spde_obj = mesh_high,
+  barrier_sf = poly.coast_utm,
+  range_fraction = 0.1,
+  proj_scaling = 1,
+  plot = TRUE
+)
+
+plot(bspde, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+#We can make a more advanced plot if we want:
+mesh_df_water <- bspde$mesh_sf[bspde$normal_triangles, ]
+mesh_df_land <- bspde$mesh_sf[bspde$barrier_triangles, ]
+
+xlims2 <- c(200,400)
+ylims2 <- c(4350,4550)
+
+ggplot(poly.coast_utm) +
+  geom_sf() +
+  geom_sf(data = mesh_df_water, size = .1, colour = "blue") +
+  geom_sf(data = mesh_df_land, size = .1, colour = "green") +
+  coord_sf(xlim = xlims2, ylim = ylims2)
+
+
+bspde15<- bspde
+```
+
+
+### bspde20
+```{r}
+# build the mesh with coastline
+max.edge = 20 #km 
+bound.outer = 66.6
+mesh_high = inla.mesh.2d(
+                         boundary = domain_utm,
+                         loc = cbind(data.eggs$X, data.eggs$Y),
+                         max.edge = c(1,5)*max.edge,
+                         cutoff = max.edge/5,
+                         offset = c(max.edge, bound.outer)
+                         )
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+mesh_high <- make_mesh(data.eggs, c("X", "Y"), mesh = mesh_high)
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+
+# Add on the barrier mesh component
+poly.coast_utm <- st_transform(poly.coast, "+init=epsg:32635 +units=km")
+bspde <- add_barrier_mesh(
+  spde_obj = mesh_high,
+  barrier_sf = poly.coast_utm,
+  range_fraction = 0.1,
+  proj_scaling = 1,
+  plot = TRUE)
+
+plot(bspde, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+#We can make a more advanced plot if we want:
+mesh_df_water <- bspde$mesh_sf[bspde$normal_triangles, ]
+mesh_df_land <- bspde$mesh_sf[bspde$barrier_triangles, ]
+
+xlims2 <- c(200,400)
+ylims2 <- c(4350,4550)
+
+ggplot(poly.coast_utm) +
+  geom_sf() +
+  geom_sf(data = mesh_df_water, size = .1, colour = "blue") +
+  geom_sf(data = mesh_df_land, size = .1, colour = "green") +
+  coord_sf(xlim = xlims2, ylim = ylims2)
+
+bspde20<- bspde
+```
+
+# Fit the models
+## MODEL 3km
+```{r}
+fit_m0_3 <- sdmTMB(
+ eggs0_abu ~ 1 + (1|Year),
+  data = data.eggs,
+  mesh = bspde3,
+  family = tweedie(link = "log"),
+  spatial = "on",
+  spatiotemporal = "IID",   
+  time = "time")
+
+model_fit<- fit_m0_3
+model_code="m0_3"
+
+sanity(model_fit)
+model_fit  
+
+tidy(model_fit, effects = "ran_pars", conf.int = TRUE)
+```
+
+## MODEL 5km 
+```{r}
+fit_m0_5 <- sdmTMB(
+ eggs0_abu ~ 1 + (1|Year),
+  data = data.eggs,
+  mesh = bspde5,
+  family = tweedie(link = "log"),
+  spatial = "on",
+  spatiotemporal = "IID",   
+  time = "time")
+
+model_fit<- fit_m0_5
+model_code="m0_5"
+
+sanity(model_fit)
+model_fit  
+
+tidy(model_fit, effects = "ran_pars", conf.int = TRUE)
+```
+
+## MODEL 8.5km
+```{r}
+fit_m0_range <- sdmTMB(
+ eggs0_abu ~ 1 + (1|Year),
+  data = data.eggs,
+  mesh = bspde_range_b,
+  family = tweedie(link = "log"),
+  spatial = "on",
+  spatiotemporal = "IID",   
+  time = "time")
+
+model_fit<- fit_m0_range
+model_code="m0_range"
+
+sanity(model_fit)
+model_fit  
+```
+
+## MODEL 10km 
+
+```{r}
+fit_m0_10 <- sdmTMB(
+ eggs0_abu ~ 1 + (1|Year),
+  data = data.eggs,
+  mesh = bspde10,
+  family = tweedie(link = "log"),
+  spatial = "on",
+  spatiotemporal = "IID",   
+  time = "time")
+
+model_fit<- fit_m0_10
+model_code="m0_10"
+
+sanity(model_fit)
+model_fit  
+```
+
+## MODEL 15km
+```{r}
+fit_m0_15 <- sdmTMB(
+ eggs0_abu ~ 1 + (1|Year),
+  data = data.eggs,
+  mesh = bspde15,
+  family = tweedie(link = "log"),
+  spatial = "on",
+  spatiotemporal = "IID",   
+  time = "time")
+
+model_fit<- fit_m0_15
+model_code="m0_15"
+
+sanity(model_fit)
+model_fit  
+```
+
+## MODEL 20km (m~0.2~) 
+
+```{r}
+fit_m0_20 <- sdmTMB(
+ eggs0_abu ~ 1 + (1|Year),
+  data = data.eggs,
+  mesh = bspde20,
+  family = tweedie(link = "log"),
+  spatial = "on",
+  spatiotemporal = "IID",   
+  time = "time")
+
+model_fit<- fit_m0_20
+model_code="m0_20"
+
+sanity(model_fit)
+model_fit  
+
+tidy(model_fit, effects = "ran_pars", conf.int = TRUE)
+```
+
+## Compare models 
+
+AIC
+```{r}
+models <- list(  m0_3=      fit_m0_3,
+                 m0_5=      fit_m0_5,   
+                 m0_range = fit_m0_range, 
+                 m0_10 =    fit_m0_10,  
+                 m0_15=     fit_m0_15, 
+                 m0_20=     fit_m0_20)
+
+
+AIC_df <- tibble(
+  model = names(models),
+  AIC = sapply(models, AIC)
+) %>% mutate(ΔAIC = AIC - min(AIC))
+
+AIC_df<- AIC_df %>% filter(model %in% c("m0_3","m0_5","m0_range","m0_10","m0_15", "m0_20")) %>% mutate(ΔAIC = AIC - min(AIC))
+
+
+caic_0_20<-cAIC(fit_m0.2_20)
+caic_0_15<-cAIC(fit_m0.2_15)
+caic_0_10<-cAIC(fit_m0.2_10)
+caic_0_range<-cAIC(fit_m0.2_range)
+caic_0_5<-cAIC(fit_m0.2_5)
+# caic_0.2_3<-cAIC(fit_m0.2_3) No possible to run because of computer memory
+
+cAIC <- tibble (
+    model= c("m0_3","m0_5","m0_range","m0_10","m0_15", "m0_20"),
+    cAIC= c(caic_0_3,caic_0_5,caic_0_range,caic_0_10,caic_0_15,caic_0_20))
+    %>% mutate(ΔcAIC = cAIC - min(cAIC,na.rm=T))
+
+AIC_df %>% filter(model %in% c("m0_3","m0_5","m0_range","m0_10","m0_15", "m0_20"))
+cAIC_df 
+```
+
+
+

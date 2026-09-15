@@ -1,0 +1,1796 @@
+---
+title: "sdmTMB Anchovy eggs Aegean "
+author: "Eleni Servou"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-float: true
+    code-fold: true         
+    code-summary: "Hide/Show "
+    code-tools:
+      toggle: true         
+---
+
+## Load libraries and prepare data
+
+```{r,message=FALSE, warning=F}
+# Load packages
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(mapdata)
+library(cowplot)
+library(patchwork)
+library(rnaturalearth)
+library(rnaturalearthdata) 
+library(sf)
+library(sp)
+library(sdmTMB, lib.loc = "C:/Users/ELENI/AppData/Local/R/sdmTMB074") #Load version 0.7.4
+packageVersion("sdmTMB")
+library(sdmTMBextra,lib.loc = "C:/Users/ELENI/AppData/Local/R/sdmTMBextra0.0.4") #Load version 0.0.4
+packageVersion("sdmTMBextra")
+library(INLA)
+library(DHARMa)
+library(gstat)
+library(readxl)
+library(gt)
+library(visreg)
+library(ggeffects)
+library(cli)
+library(ggplotify)
+library(viridis)
+```
+
+```{r}
+#Data set (Eggs and potential covatiates) 
+data.eggs <- read_xlsx("data/data_glmm.xlsx",na = c("NA"))
+data.eggs<- data.eggs %>% mutate(station = factor(station))
+
+data.eggs <- add_utm_columns(data.eggs, c("lon", "lat"), ll_crs = "WGS84", utm_crs = 32635,  units = "km") #Project coordinates to km
+data.eggs$time<- as.integer(data.eggs$Year)  
+data.eggs$Year <- as.factor(data.eggs$Year)
+data.eggs <- data.eggs %>% dplyr::rename("SSS"="sal00_2to7m" )
+data.eggs <- data.eggs %>% dplyr::rename("SST"="t090_2to7m" )
+data.eggs <- data.eggs %>%dplyr::rename("Depth"="bottom_depth" )
+```
+str(data.eggs)
+tibble [856 × 15] (S3: tbl_df/tbl/data.frame)
+ $ Year           : YEAR OF SAMPLING
+ $ station        : STATION NUMBER
+ $ lon            : Sampling Lon in deg
+ $ lat            : Sampling Lat in deg
+ $ eggs0_abu      : Egg0/m2 
+ $ sal00_2to7m    : CTD Salinity (measured + interpolated values) at 2-7m (mean)
+ $ t090_2to7m     : CTD Temperature (measured + interpolated values) at 2-7m (mean)
+ $ CTD            : CTD mesurment-YES ; Interpolation-NO
+ $ bottom_depth   : Depth of the sea-bead (mesured)
+ $ TL_cm          : Annual mean TL (in cm)
+ $ Acoustic_Biomas: Biomass from acoustic method (in t)
+ $ CHL_extracted  : CHl-a concentration L4 satelite
+ $ X              : Sampling Lon in Km
+ $ Y              : Sampling Lat in Km
+ $ time           : time step for spatio-temporal filed
+
+
+```{r}
+#Data for maps
+
+#Cosatline
+coast <- st_read("data/Greece_geology/Greece/land_poly_GR.gpkg",quiet = TRUE) %>%  st_transform(crs = "WGS84")
+coast_km<-  st_transform(coast, crs = 32635);  
+st_geometry(coast_km) <- st_geometry(coast_km) / 1000  
+
+#Rivers
+rivers <- st_read("data/Greece_geology/Rivers/Rivers_geodatagovgr/Rivers_geodatagovgr.shp",quiet = TRUE)  %>% st_transform(crs = "WGS84")  %>%  
+  filter(ALTNAME1 %in% c("EVROS R. 1", "EVROS R. 2","NESTOS R.","STRYMONIKOU S","STRYMON R. 2","STRYMON R. 1","AXIOS R. (VARDARIS)","ALIAKMON R.","ALIAKMON R. 1","ALIAKMON R. 2","PINIOS R.", "AXIOS R. (VARDARIS)"))  
+
+#Isobaths
+isobath <- st_read("data/Greece_geology/Isobaths/ged_med_bathymetry/countour_gebmed.shp",quiet = TRUE) %>% filter(CONTOUR %in% c(-200,-100))#,-50)) #subset contours 200m
+isobath_type <- c("-100" = 5,"-200"= 1) ; isobath$Isobaths<-  as.factor(isobath$CONTOUR)
+isobath.km<-  st_transform(isobath, crs = 32635);  st_geometry(isobath.km) <- st_geometry(isobath.km) / 1000 
+```
+
+## Egg0 data exploration (Figure 2)
+``` {r} 
+# Split data into zeros and positives
+eggs_zero <- filter(data.eggs, eggs0_abu == 0)
+eggs_pos  <- filter(data.eggs, eggs0_abu > 0)
+
+# Define legend breaks based on your data
+breaks <- c(0.1, 1, 10, 100, 500, 1000, 2325)
+labels <- c("0", "1", "10", "100",500, "1000", "2325")
+
+#MAP
+plot_eggs <- ggplot() +
+  # Coastline
+  geom_sf(data = coast, fill = "gray60", col = "gray50") +
+  
+  # Rivers
+  geom_sf(data = rivers, col = "steelblue", lwd = 0.5) +
+  
+  # Isobaths
+  geom_sf(data = isobath, aes(linetype = factor(Isobaths)),
+          col = "gray40", lwd = 0.2) +
+  scale_linetype_manual(name = "Isobaths (m)",values = c("-100" = "solid", "-200" = "dotdash")) +
+  
+  # Zeros as gray circles
+  geom_point(data = eggs_zero, aes(x = lon, y = lat),
+             color = "grey50", fill = "grey50",
+             size = 1, alpha = 0.8, shape = 21) +
+  
+  # Positive values: size + color mapped
+  geom_point(data = eggs_pos,
+             aes(x = lon, y = lat, size = eggs0_abu, color = eggs0_abu),
+             alpha = 0.8) +
+
+  scale_size_continuous(
+    trans = "log10",
+    range = c(1, 3),
+    breaks = breaks,   # exclude 0 for log scale
+    labels = labels,
+    name =expression(eggs[0]~m^{-2}))  +
+  
+  scale_color_viridis_c(
+    trans = "log10",
+    breaks = breaks,
+    labels = labels,
+    na.value = "grey50",
+    name =expression(eggs[0]~m^{-2})) +
+  
+  # Legend: show zeros as gray
+  guides(
+    size = guide_legend(override.aes = list(color = viridis(length(breaks) - 2))),
+    color = "none",
+    linetype = guide_legend(order = 2)) +
+  
+  # Facet by year
+  facet_wrap(~ Year) +
+  coord_sf(xlim = c(23.5, 26.4), ylim = c(39.2, 41.1)) +
+  labs(x = "Longitude", y = "Latitude") +
+  theme_bw()+
+ scale_x_continuous(breaks = seq(23, 26, by = 1))+ theme(legend.position = "right",    legend.justification = "top",
+            legend.title = element_text(size = 10),  # smaller title
+            legend.text = element_text(size = 8),    # smaller labels,
+  #legend.margin = margin(t = 15),
+  legend.box.spacing = unit(0.5, "cm"),
+  plot.margin = margin(12, 1, 5, 10),
+  strip.background = element_rect(fill = "white", colour = "white"),  strip.text.x = element_text(face = "bold", size = 11,hjust = 0) )
+
+
+#Boxplot
+N_data_eggs <- data.eggs %>% select( "Year","eggs0_abu") |>
+  dplyr::group_by(Year) |>
+  dplyr::summarise(
+    N = n(),
+    Zero = sum(eggs0_abu == 0),
+    Zero_percent = 100 * Zero / N)
+
+boxplot <- ggplot(data.eggs%>% filter(eggs0_abu>0), aes(x = as.factor(Year), y = eggs0_abu)) + 
+  geom_boxplot(alpha = 0.8, color = "gray20",outlier.size = 0.5) +
+  geom_point(
+  data =N_data_eggs,
+    aes(x = Year, y = -80, size = Zero_percent),
+    shape = 21,
+    fill = "#D95F02",
+    colour = "gray20",
+    alpha = 0.8 ) +
+  scale_size_continuous(name = ("% Zeros"), range =c(0.6,1.8)) +
+  scale_y_continuous(limits = c(-80, NA))+
+  ggtitle(expression(eggs[0]~m^{-2})) +  xlab("") + 
+  ylab("") +  theme_bw(base_size =9)+ 
+  theme(
+    axis.text.x = element_text(angle = 40, hjust = 1),
+    legend.position = "right" )
+ 
+# Combine maps and boxplot 
+final_data <- ggdraw() +
+  draw_plot(plot_eggs) +
+  inset_element(
+    boxplot,
+    left   = 0.59,  # close to left edge
+    bottom = -0.04,  # close to bottom edge
+    right  = 1.0,  # inset width (increase for bigger inset)
+    top    = 0.34,  # inset height (increase for taller inset)
+    align_to = "full")
+
+final_data
+```
+
+## Covariates exploration (Figures S2-S6)
+
+#### Depth Figure S2  
+```{r}
+map_depth <- ggplot() +
+ 
+  geom_sf(data = coast, fill = "gray60", col = "gray50") +
+ 
+  geom_sf(data = rivers, col = "steelblue", lwd = 0.5) +
+  
+  geom_sf(data = isobath, aes(linetype = factor(Isobaths)), col = "gray40", lwd = 0.2) +
+   scale_linetype_manual(
+    name = "Isobaths (m)",
+    values = c("-100" = "solid", "-200" = "dotdash")) +
+  
+ geom_point(data = data.eggs,
+             aes(x = lon, y = lat, color = Depth),
+             alpha = 0.9) +
+  
+ facet_wrap(~Year) +
+ 
+  scale_color_gradientn(
+  colors = grDevices::colorRampPalette(
+    rev(c("#081d58", "#253494", "#225ea8", "#1d91c0",
+          "#41b6c4", "#7fcdbb", "#c7e9b4", "#ffffcc")))(300),
+  name = "Depth (m)",
+  trans = "log",
+  labels = scales::label_number(accuracy = 1)) +  
+  coord_sf(xlim = c(23.5, 26.4), ylim = c(39.2, 41.1)) +
+  labs(x = "Longitude", y = "Latitude") +
+  theme_bw()+
+  scale_x_continuous(breaks = seq(23, 26, by = 1)) + 
+  theme( legend.position = "bottom",     # put legend below
+         legend.title = element_text(size = 10),  # smaller title
+         legend.text = element_text(size = 8),    # smaller labels,
+         legend.box.spacing = unit(0.5, "cm"),
+         plot.margin = margin(12, 1, 5, 10),
+         strip.background = element_rect(fill = "white", colour = "white"),  # white background with black border
+         strip.text.x = element_text(face = "bold", size = 11,hjust = 0)) 
+
+# Boxplot Depth 
+data.eggs$Depth_std <- scale(data.eggs$Depth)
+
+# Get ranges
+y_min  <- min(data.eggs$Depth, na.rm = TRUE)
+y_max  <- max(data.eggs$Depth, na.rm = TRUE)
+std_min <- min(data.eggs$Depth_std, na.rm = TRUE)
+std_max <- max(data.eggs$Depth_std, na.rm = TRUE)
+
+# Define linear transformation between raw and standardized scales
+to_std <- function(x) (x - y_min) / (y_max - y_min) * (std_max - std_min) + std_min
+
+cruise_means <- data.eggs %>%
+  group_by(Year) %>%
+  summarise(mean_depth = mean(Depth, na.rm = TRUE))
+
+# Get min and max salinity for scaling
+depth_range <- range(data.eggs$Depth, na.rm = TRUE)
+
+# Plot sd and normal
+Depth_box<- ggplot(data.eggs, aes(y = as.factor(Year), x = Depth)) +
+  geom_boxplot(alpha = 0.8, color = "gray20",outlier.size = 0.5) +
+  scale_x_continuous(
+   name = "Depth (m)",
+    sec.axis = sec_axis(~ to_std(.), name = "z-Depth")) +
+  xlab("") + ylab("") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(angle = 45, hjust = 1),
+        plot.background  = element_rect(fill = NA, colour = NA),
+       legend.background = element_rect(fill = NA, colour = NA)  )
+
+
+#Combine the two maps
+final_Depth <- ggdraw() +
+  draw_plot(map_depth) +
+  inset_element(
+    Depth_box,
+    left   = 0.655,  # close to left edge
+    bottom = 0.08,  # close to bottom edge
+    right  = 1.01,  # inset width (increase for bigger inset)
+    top    = 0.425,  # inset height (increase for taller inset)
+    align_to = "full")
+
+final_Depth
+```
+
+#### Salinity Figure S3 
+```{r}
+#Plot standardized Salinity 
+data.eggs$SSS_std <- scale(data.eggs$SSS)
+
+# Get ranges
+y_min  <- min(data.eggs$SSS, na.rm = TRUE)
+y_max  <- max(data.eggs$SSS, na.rm = TRUE)
+std_min <- min(data.eggs$SSS_std, na.rm = TRUE)
+std_max <- max(data.eggs$SSS_std, na.rm = TRUE)
+
+# Define linear transformation between raw and standardized scales
+to_std <- function(x) (x - y_min) / (y_max - y_min) * (std_max - std_min) + std_min
+
+# Plot sd and normal
+Salinity_Box<- ggplot(data.eggs, aes(x = as.factor(Year), y = SSS)) +
+  geom_boxplot(alpha = 0.8, color = "gray20",outlier.size = 0.5) +
+  scale_y_continuous(
+    name = "SSS (psu)",
+    sec.axis = sec_axis(~ to_std(.), name = "z-SSS")) +
+  xlab("") + ylab("") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+plots <- lapply(split(data.eggs, data.eggs$Year), function(df) {
+    ggplot() +
+        geom_sf(data = coast, fill = "gray60", col = "gray50") +
+        geom_sf(data = rivers, col = "steelblue", lwd = 0.5) +
+        geom_sf(data = isobath, aes(linetype = factor(Isobaths)),
+          col = "gray40", lwd = 0.2, show.legend = FALSE)+  # <-- hides the legend for this layer) +
+    scale_linetype_manual( name = "Isobaths (m)",values = c("-100" = "solid", "-200" = "dotdash")) +
+
+# CTD = NO
+geom_point(
+      data = subset(df, CTD == "NO"),
+      aes(x = lon, y = lat, fill = SSS),
+      shape = 21,
+      alpha = 0.9,colour = "gray60",stroke = 0.1) +
+
+# CTD = YES
+geom_point(
+      data = subset(df, CTD == "YES"),
+      aes(x = lon, y = lat, fill = SSS),
+      shape = 21,
+      colour = "black",stroke = 0.18, alpha = 0.9 ) +
+  scale_fill_gradientn(
+            colors = grDevices::colorRampPalette(
+             c("#2166ac", "#67a9cf", "#d1e5f0", "#fddbc7", "#ef8a62", "#b2182b"))(300),
+         name = "SSS\n(psu)")+        
+  coord_sf(xlim = c(23.5, 26.4), ylim = c(39.2, 41.1)) +
+  labs( title = unique(df$Year),
+        x = "Longitude", y = "Latitude") +
+  scale_x_continuous(breaks = seq(23, 26, by = 1)) +
+  theme_bw() +
+  theme( plot.title = element_text(face = "bold", size = 11,hjust = 0), # right-aligned
+         legend.position = "bottom",     # put legend below
+          legend.title = element_text(size = 8),  # smaller title
+          legend.text = element_text(size = 8),    # smaller labels
+          legend.key.width = unit(0.5, "cm"),       # make colorbar wider
+          legend.key.height = unit(0.3, "cm"),     # make colorbar shorter
+  legend.box.margin = margin(t = 0, b = 1, l = 0, r = 0))  # moves legend closer to panel
+  })
+
+final_plot <- wrap_plots(plots)
+
+
+final_Sal <- ggdraw() +
+  draw_plot(final_plot) +
+  inset_element(
+    Salinity_Box,
+    left   = 0.655,  # close to left edge
+    bottom =  0,  # close to bottom edge
+    right  = 1,  # inset width (increase for bigger inset)
+    top    = 0.35,  # inset height (increase for taller inset)
+    align_to = "full")
+
+final_Sal
+```
+
+#### Acoustic Figure S4  
+```{r}
+mean_Ab <- mean(data.eggs$Acoustic_Biomas, na.rm = TRUE)
+sd_Ab   <- sd(data.eggs$Acoustic_Biomas, na.rm = TRUE)
+to_std   <- function(x) (x - mean_Ab) / sd_Ab
+
+Acoustic <- ggplot(data.eggs, aes(x = (Year), y = Acoustic_Biomas)) +
+ # geom_errorbar(data = Acoustic_cv, aes(x =as.factor(Year), y= Anchovy_Str1, ymin = Anchovy_Total_CI_low, ymax = Anchovy_Total_CI_up), width=0.3,linewidth=0.6)+  
+    geom_point(alpha = 0.7,fill = "blue", pch = 21,  size = 0.8   ) +
+  scale_y_continuous(
+    name = "TB (t)",
+    sec.axis = sec_axis(~ to_std(.), name = "z-TB")) +
+    xlab("") + ylab("") +
+    theme_bw() +
+    theme(legend.position = "none", 
+        axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text())
+
+Acoustic
+```
+
+#### SST Figure S5 
+```{r}
+map_SST <- ggplot() +
+  geom_sf(data = coast, fill = "gray60", col = "gray50") +
+  geom_sf(data = rivers, col = "steelblue", lwd = 0.5) +
+  geom_sf(data = isobath, aes(linetype = factor(Isobaths)),
+          col = "gray40", lwd = 0.2) +
+    scale_linetype_manual(
+    name = "Isobaths (m)",
+    values = c("-100" = "solid", "-200" = "dotdash")) +
+  
+# CTD = NO
+geom_point(
+      data = subset(data.eggs, CTD == "NO"),
+      aes(x = lon, y = lat,fill = SST),
+      shape = 21, alpha = 0.9,colour = "gray60",stroke = 0.1) +
+# CTD = YES
+geom_point(
+      data = subset(data.eggs, CTD == "YES"),
+      aes(x = lon, y = lat, fill = SST),
+      shape = 21,colour = "black",stroke = 0.18,alpha = 0.9) +
+ 
+ facet_wrap(~Year) +
+ scale_fill_gradientn(
+  colors = grDevices::colorRampPalette(
+   c("#2c7bb6", "#abd9e9", "#ffffbf","#fdae61", "#d7191c"))(300),
+  name = "Temperature (°C)")+ coord_sf(xlim = c(23.5, 26.4), ylim = c(39.2, 41.1)) +
+ labs(x = "Longitude", y = "Latitude") +
+ 
+ theme_bw()+
+ scale_x_continuous(breaks = seq(23, 26, by = 1)) +   theme(legend.position = "right",legend.justification = "top" )
+
+#Plot standardized Temprature 
+data.eggs$SST_std <- scale(data.eggs$SST)
+
+# Get ranges
+y_min  <- min(data.eggs$SST, na.rm = TRUE)
+y_max  <- max(data.eggs$SST, na.rm = TRUE)
+std_min <- min(data.eggs$SST_std, na.rm = TRUE)
+std_max <- max(data.eggs$SST_std, na.rm = TRUE)
+
+# Define linear transformation between raw and standardized scales
+to_std <- function(x) (x - y_min) / (y_max - y_min) * (std_max - std_min) + std_min
+
+# Plot sd and normal
+SST_Box<- ggplot(data.eggs, aes(x = as.factor(Year), y = SST)) +
+  geom_boxplot(alpha = 0.8, color = "gray20",outlier.size = 0.5) +
+  scale_y_continuous(
+  name = "Temperature (°C)",
+  sec.axis = sec_axis(~ to_std(.), name = "z-Temperature") ) +
+  xlab("") + ylab("") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Combine the two maps
+final_SST <- ggdraw() +
+  draw_plot(map_SST) +
+  inset_element(
+    SST_Box,
+    left   = 0.55,  # close to left edge
+    bottom = 0.05,  # close to bottom edge
+    right  = 1,  # inset width (increase for bigger inset)
+    top    = 0.4,  # inset height (increase for taller inset)
+    align_to = "full")
+  
+final_SST
+```
+
+#### CHLA Figure S6 
+```{r}
+#Plot standardized Chl-a 
+data.eggs$CHL_extracted_std <- scale(data.eggs$CHL_extracted)
+
+# Get ranges
+y_min  <- min(data.eggs$CHL_extracted, na.rm = TRUE)
+y_max  <- max(data.eggs$CHL_extracted, na.rm = TRUE)
+std_min <- min(data.eggs$CHL_extracted_std, na.rm = TRUE)
+std_max <- max(data.eggs$CHL_extracted_std, na.rm = TRUE)
+
+# Define linear transformation between raw and standardized scales
+to_std <- function(x) (x - y_min) / (y_max - y_min) * (std_max - std_min) + std_min
+
+# Plot sd and normal
+CHL_Box<- ggplot(data.eggs, aes(x = as.factor(Year), y = CHL_extracted)) +
+  geom_boxplot(alpha = 0.8, color = "gray20",outlier.size = 0.5) +
+  scale_y_continuous(
+    name = expression(Chla-a ~(mg ~m^{-3})),
+    sec.axis = sec_axis(~ to_std(.), name = "z-Chl-a")) +
+  xlab("") + ylab("") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+plots <- lapply(split(data.eggs, data.eggs$Year), function(df) {
+  ggplot() +
+    geom_sf(data = coast, fill = "gray60",col = "gray50") +
+    geom_sf(data = rivers,col = "steelblue",lwd = 0.5) +
+    geom_sf(data = isobath, aes(linetype = factor(Isobaths)), col = "gray40", lwd = 0.2, show.legend = FALSE) +
+    scale_linetype_manual(
+      name = "Isobaths (m)",
+      values = c(  "-100" = "solid","-200" = "dotdash")) +
+  geom_point(
+      data = df,
+      aes(x = lon, y = lat,color = CHL_extracted),
+      alpha = 0.9) +
+    scale_color_gradientn(
+      colors = grDevices::colorRampPalette(
+        c("#f7fcf5","#e5f5e0","#c7e9c0","#a1d99b","#74c476","#41ab5d","#238b45","#006d2c","#00441b"))(300),
+     name = expression(atop(Chl-a, (mg~m^{-3}))) ) +
+    
+  coord_sf(xlim = c(23.5, 26.4),  ylim = c(39.2, 41.1)) +
+  labs(
+     title = unique(df$Year),
+      x = "Longitude",  y = "Latitude") +
+  scale_x_continuous (breaks = seq(23, 26, by = 1)) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(face = "bold",size = 11,hjust = 0),
+      legend.position = "bottom",
+      legend.title = element_text(size = 8),
+      legend.text = element_text(size = 8),
+      legend.key.width = unit(0.5, "cm"),
+      legend.key.height = unit(0.3, "cm"),
+      legend.box.margin = margin(t = 0,b = 1,l = 0,r = 0))
+})
+
+final_plot <- wrap_plots(plots)
+
+final_CHL <- ggdraw() +
+  draw_plot(final_plot) +
+  inset_element(
+    CHL_Box,
+    left   = 0.66,  # close to left edge
+    bottom =  0,  # close to bottom edge
+    right  = 1,  # inset width (increase for bigger inset)
+    top    = 0.35,  # inset height (increase for taller inset)
+    align_to = "full")
+
+final_CHL
+```
+
+#### TL 
+```{r}
+mean_Ab <- mean(data.eggs$TL_cm, na.rm = TRUE)
+sd_Ab   <- sd(data.eggs$TL_cm, na.rm = TRUE)
+to_std   <- function(x) (x - mean_Ab) / sd_Ab
+
+
+TL <- ggplot(data.eggs, aes(x = (Year), y = TL_cm)) +
+  # geom_errorbar(data = data.eggs, aes(x =(Year), y= TL_cm, ymin = (data.eggs$TL_cm - 1.96*data.eggs$TL_se) , ymax = (data.eggs$TL_cm +       1.96*data.eggs$TL_se)), width=0.3,linewidth=0.3)+  
+  geom_point(alpha = 0.7,fill = "blue", pch = 21,  size = 0.8) +
+  scale_y_continuous(
+    name = "TL (cm)",
+    sec.axis = sec_axis(~ to_std(.), name = "Standardized TL")) +
+    xlab("") + ylab("") +
+    theme_bw() +
+  theme(legend.position = "none", 
+        axis.text.x = element_text(angle = 45, hjust = 1), 
+        axis.text.y = element_text())
+TL
+```
+
+### Covariates Collinearity exploration  
+```{r}
+# Annual means 
+mean_TL<- data.eggs %>%
+  group_by(Year) %>%
+  summarise(TL = mean(TL_cm, na.rm = TRUE)) %>%
+  arrange(Year)
+
+mean_SSS<- data.eggs %>%
+  group_by(Year) %>%
+  summarise(SSS = mean(SSS, na.rm = TRUE)) %>%
+  arrange(Year)
+
+mean_SST<- data.eggs %>%
+  group_by(Year) %>%
+  summarise(SST = mean(SST, na.rm = TRUE)) %>%
+  arrange(Year)
+
+mean_Acoustic <- data.eggs %>%
+  group_by(Year) %>%
+  summarise(Acoustic_Biomas = mean(Acoustic_Biomas, na.rm = TRUE)) %>%
+  arrange(Year)
+
+mean_Chla<- data.eggs %>%
+  group_by(Year) %>%
+  summarise(Chla = mean(CHL_extracted, na.rm = TRUE)) %>%
+  arrange(Year)
+
+# Point - point Correlations
+ggplot(data = NULL, aes(x = data.eggs$Depth, y = data.eggs$SSS)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+  labs(
+    x = "Depth",
+    y = "SSS",
+    subtitle = paste("Pearson correlation =", round(cor(data.eggs$Depth, data.eggs$SSS, use = 'complete.obs'), 2))
+  ) + theme_bw() 
+
+ggplot(data = NULL, aes(x = data.eggs$Depth, y = data.eggs$SST)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+  labs(
+    x = "Depth",
+    y = "SST",
+    subtitle = paste("Pearson correlation =", round(cor(data.eggs$Depth, data.eggs$SST, use = 'complete.obs'), 2))
+  ) + theme_bw() 
+
+ggplot(data = NULL, aes(x = data.eggs$SSS, y = data.eggs$SST)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+  labs(
+    x = "SSS",
+    y = "SST",
+    subtitle = paste("Pearson correlation =", round(cor(data.eggs$SSS, data.eggs$SST, use = 'complete.obs'), 2))) +
+  theme_bw()
+
+ggplot(data = NULL, aes(y = data.eggs$CHL_extracted, x = data.eggs$SSS)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+  labs(
+    x = "SSS",
+    y = "Chla-daily",
+    subtitle = paste("Pearson correlation =", round(cor(data.eggs$CHL_extracted,data.eggs$SSS, use = 'complete.obs'), 2))) +
+   theme_bw()
+
+ggplot(data = NULL, aes(y = data.eggs$CHL_extracted, x = data.eggs$SST)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+  labs(
+    x = "SST",
+    y = "Chla-daily",
+    subtitle = paste("Pearson correlation =", round(cor(data.eggs$CHL_extracted,data.eggs$SST, use = 'complete.obs'), 2))) +
+  theme_bw()
+
+ggplot(data = NULL, aes(y = data.eggs$CHL_extracted, x = data.eggs$Depth)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+  labs(
+    x = "Depth",
+    y = "Chla-daily",
+    subtitle = paste("Pearson correlation =", round(cor(data.eggs$CHL_extracted,data.eggs$Depth, use = 'complete.obs'), 2))) +
+  theme_bw()
+
+#Annuals
+ggplot(data = NULL, aes(x = mean_TL$TL, y = mean_Acoustic$Acoustic_Biomas)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+      geom_text(aes(label = mean_TL$Year),vjust = -1, size = 2) +
+  labs(
+    x = "Mean Length",
+    y = "Acoustic Biomass",
+    subtitle = paste("Pearson correlation =", round(cor(mean_TL$TL, mean_Acoustic$Acoustic_Biomas, use = 'everything'), 2))) +
+  theme_bw()
+
+ggplot(data = NULL, aes(x = mean_TL$TL, y = mean_SSS$SSS)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+  labs(
+    x = "Mean Length",
+    y = "SSS",
+    subtitle = paste("Pearson correlation =", round(cor(mean_TL$TL, mean_SSS$SSS, use = 'complete.obs'), 2))) +
+  theme_bw()
+
+ggplot(data = NULL, aes(x = mean_TL$TL, y = mean_SST$SST)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+      geom_text(aes(label = mean_SST$Year), vjust = -1, size = 2) +
+  labs(
+    x = "Mean Length",
+    y = "SST",
+    subtitle = paste("Pearson correlation =", round(cor(mean_TL$TL, mean_SST$SST, use = 'complete.obs'), 2))) +
+  theme_bw()
+
+ggplot(data = NULL, aes(x = mean_Acoustic$Acoustic_Biomas, y = mean_SSS$SSS)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+  labs(
+    x = "Acoustic Biomass",
+    y = "SSS",
+    subtitle = paste("Pearson correlation =", round(cor(mean_Acoustic$Acoustic_Biomas, mean_SSS$SSS, use = 'complete.obs'), 2))) +
+  theme_bw()
+
+ggplot(data = NULL, aes(x = mean_Acoustic$Acoustic_Biomas, y = mean_SST$SST)) +
+  geom_point(color = "steelblue", size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
+    geom_text(aes(label = mean_SST$Year), vjust = -1, size = 2) +
+  labs(
+    x = "Acoustic Biomass",
+    y = "SST",
+    subtitle = paste("Pearson correlation =", round(cor(mean_Acoustic$Acoustic_Biomas, mean_SST$SST, use = 'complete.obs'), 2))) +
+  theme_bw()
+```
+
+## Standardize you data covariates before the models
+```{r}
+data.eggs <- data.eggs %>%
+  mutate(across(c("SSS","Depth","SST","TL_cm","Acoustic_Biomas","CHL_extracted"), ~ scale(.)[, 1]))
+```
+
+## Create the mesh
+
+The characteristics of the mesh have been decided based on a prior sensitivity analysis. 
+We thank M.Woillez for providing us a tutor code fo how to implement barrier mesh. 
+The following code is a modified for the current application in the NEAS.
+
+```{r}
+poly.coast <- coast  # Greek shp WGS84
+stations_sf <- st_as_sf(data.eggs, coords = c("lon","lat"), crs = 4326)
+plot(stations_sf$geometry, pch=19, col=2)
+
+# Create a convex hull polygon around all stations
+transect_poly <- st_convex_hull(st_union(stations_sf))
+
+# Buffer around the transect polygon (e.g., 0.1 degrees ~ ~10km depending on latitude)
+buff <- st_buffer(transect_poly, dist = 10000)  # WGS84 degrees; or use UTM for meters
+
+# Plot the buffer
+plot(buff, col = "lightblue", border = "blue")
+plot(stations_sf$geometry, add = TRUE, pch = 19, col = 2)
+ 
+output = st_intersection(buff,poly.coast)
+plot(output,col=3)
+domain = st_difference(transect_poly,st_union(output))
+domain = st_sf(domain)
+
+domain_utm <- st_transform(domain, "+init=epsg:32635 +units=km")
+plot(domain_utm,col=4,axes=T)
+plot(data.eggs$X, data.eggs$Y, pch="+",add=T)
+
+# build the mesh with coastline
+range_est<- (23*1.85) # Decided based on the prior sensitivity analysis 
+
+max.edge =range_est/5 #max.edge is smaller than 1/5 of the range #max.edge:  8.51 km
+bound.outer = range_est*(2/3) #bound.outer   28.36667 km
+
+mesh_high = inla.mesh.2d(
+                         boundary = domain_utm,
+                         loc = cbind(data.eggs$X, data.eggs$Y),
+                         max.edge = c(1,5)*max.edge,
+                         cutoff = max.edge/5,
+                         offset = c(max.edge, bound.outer)
+                         )
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+mesh_high <- make_mesh(data.eggs, c("X", "Y"), mesh = mesh_high)
+plot(mesh_high, lwd=0.5, axes = T); points(data.eggs$X, data.eggs$Y, col="red")
+
+# Add on the barrier mesh component
+poly.coast_utm <- st_transform(poly.coast, "+init=epsg:32635 +units=km")
+bspde <- add_barrier_mesh(
+  spde_obj = mesh_high,
+  barrier_sf = poly.coast_utm,
+  range_fraction = 0.1,
+  proj_scaling = 1,
+  plot = TRUE)
+
+plot(bspde, lwd=0.5); points(data.eggs$X, data.eggs$Y, col="red")
+
+#We can make a more advanced plot if we want:
+mesh_df_water <- bspde$mesh_sf[bspde$normal_triangles, ]
+mesh_df_land <- bspde$mesh_sf[bspde$barrier_triangles, ]
+
+xlims2 <- c(200,400)
+ylims2 <- c(4350,4550)
+
+ggplot(poly.coast_utm) +
+  geom_sf() +
+  geom_sf(data = mesh_df_water, size = .1, colour = "blue") +
+  geom_sf(data = mesh_df_land, size = .1, colour = "green") +
+  coord_sf(xlim = xlims2, ylim = ylims2)
+  
+triangles <- bspde$mesh$graph$tv
+coords <- bspde$mesh$loc[, 1:2]
+triangle_centroids <- apply(triangles, 1, function(verts) {
+  colMeans(coords[verts, ])
+})
+centroids_df <- data.frame(
+  X = triangle_centroids[1, ],
+  Y = triangle_centroids[2, ])
+
+# Mark land/water
+centroids_df$region <- "water"
+centroids_df$region[bspde$barrier_triangles] <- "land"
+
+plot(bspde, lwd = 0.5);points(centroids_df$X, centroids_df$Y, col = ifelse(centroids_df$region=="water","blue","green"), pch = 19, cex = 0.5) ;points(data.eggs$X, data.eggs$Y, col = "red", pch = 16)
+```
+## Instert prediction grid
+
+We are going to need another grid in which we will predict the eggs abundance using the final model.
+
+The prediction grid needs to have all the variables that were used in the model in each of each cell every year.
+Here I am just predicting back in the initial locations because I just want to visualize my spatial fields
+
+```{r}
+pred_grid= data.eggs
+```
+
+# Spatiotemporal model without covariates 
+### Model fit 
+```{r}
+fit_m0 <- sdmTMB(
+ eggs0_abu ~ 1 + (1|Year),
+  data = data.eggs,
+  mesh = bspde,
+  family = tweedie (link = "log"),
+  spatial = "on",
+  spatiotemporal = "IID",   
+  time = "time")
+```
+
+### Diagnostics
+```{r}
+sanity(fit_m0)
+```
+
+### Results of the fit
+```{r}
+fit_m0
+```
+### Residual cheking 
+```{r}
+model=fit_m0
+  # Simulate and calculate residuals
+  s_fit_m0 <- simulate(model, nsim = 1000, type = "mle-mvn")
+  r_fit_m0 <- dharma_residuals(s_fit_m0, model, return_DHARMa = TRUE)
+  
+# Run DHARMa tests
+# QQ
+ qq_plot_m0<- as.ggplot(~{ 
+  plotQQunif(r_fit_m0,testUniformity = F, testOutliers = F, testDispersion = F)
+ }) 
+
+#Residuals vs predicted
+DHARMa::plotResiduals(r_fit_m0)
+
+#Check you models ability to catch Zeros
+sum(data.eggs$eggs0_abu== 0) / length(data.eggs$eggs0_abu) # True zero 
+sum(s_fit_m0 == 0)/length(s_fit_m0) # Model fitted zero 
+
+#Spatial autocorrelation
+simulationOutputS_m0 <- recalculateResiduals(
+    r_fit_m0,
+    group = paste(data.eggs$X, data.eggs$Y),
+    aggregateBy = mean)
+  
+DHARMa::testSpatialAutocorrelation(
+    simulationOutputS_m0,
+    x = unique(data.eggs$X),
+    y = unique(data.eggs$Y))
+ 
+```
+
+### Prediction
+#### Full model prediction (All fixed and random effects)
+``` {r} 
+#Create a prediction function to use everywhere
+plot_prediction <- function(prediction,m_code) {
+
+     # Compute values directly from exp(est)
+     exp_est <- exp(prediction$est)
+     max_val <- max(exp_est, na.rm = TRUE)
+     min_val <- min(exp_est, na.rm = TRUE)
+     sigma_val <- median(exp_est, na.rm = TRUE)  # adaptive sigma
+     
+     # Quantile-based breaks (10 quantiles)
+     q_breaks <- quantile(exp_est, probs = seq(0, 1, length.out = 5), na.rm = TRUE)
+     
+     # Rounded labels to nearest 10
+     q_labels <- scales::label_number(accuracy = 10, big.mark = ",")(q_breaks)
+     
+# The plot
+ggplot() +
+     geom_sf(data = coast, fill = "gray60", col = "gray50") +
+     geom_sf(data = rivers, col = "steelblue", lwd = 0.5) +
+     geom_sf(data = isobath, aes(linetype = factor(Isobaths)),
+          col = "gray40", lwd = 0.2) +
+    scale_linetype_manual(
+    name = "Isobaths (m)",
+    values = c("-100" = "solid", "-200" = "dotdash") ) +
+         # Prediction points
+         geom_point(
+             data = prediction,
+             aes(x = lon, y = lat, size = exp(est), color = exp(est)),
+             alpha = 0.8
+         ) +
+         
+         # Pseudo-log color scale with more quantile breaks
+         scale_color_viridis_c(
+            trans = scales::pseudo_log_trans(sigma = sigma_val),
+             limits = c(0, max_val),
+             breaks = c(0,10,50,100,200,500,1500),
+             labels = c(0,10,50,100,200,500,1500),
+        name =expression(eggs[0]~m^{-2})
+         ) +
+         
+         # Pseudo-log size scale (legend hidden)
+         scale_size_continuous(
+             trans = scales::pseudo_log_trans(sigma = sigma_val),
+             limits = c(0, max_val),
+             range = c(0.1, 3),
+             guide = "none"
+         ) +
+     
+   facet_wrap(~ Year) +
+  coord_sf(xlim = c(23.5, 26), ylim = c(39.3, 41)) +
+  labs(x = "Longitude", y = "Latitude") +
+  theme_bw()+
+ scale_x_continuous(breaks = seq(23.5, 26.5, by = 1))+
+        ggtitle(paste(m_code))+
+         theme_bw() +
+         theme(legend.position = "right")}
+#M0 prediction
+#Predict in the prediction grid that has been created above
+pred_m0 <- predict(fit_m0, newdata = pred_grid)
+plotP0<- plot_prediction(pred_m0,"M0")
+plotP0
+```
+
+#### Plot temporal 
+```{r}
+# Create a generic function 
+plot_alpha<-  function(year_re ){
+ggplot(year_re, aes(x = factor(level_ids), y = estimate)) +
+  geom_errorbar(
+    aes(ymin = conf.low, ymax = conf.high),
+    width = 0.15) +
+  geom_point(size = 2, color="lightblue") +
+  labs(
+    x = "Year",
+    y = "Year-specific temporal deviations" ) +
+  theme_bw() 
+}
+
+#Plot M0
+tidy(fit_m0, "ran_vals") # 
+year_re <- tidy(fit_m0, "ran_vals")
+plot_alpha_m0 <- plot_alpha(year_re) + ggtitle("M0") +ylim(-2,2)
+plot_alpha_m0
+```    
+
+#### Plot spatial 
+``` {r} 
+# Create a generic function 
+plot_omega <- function(prediction,m_code) {
+  omega <- prediction$omega_s
+
+ ggplot() +
+     geom_sf(data = coast, fill = "gray60", col = "gray50") +
+     geom_sf(data = rivers, col = "steelblue", lwd = 0.5) +
+     geom_sf(data = isobath, aes(linetype = factor(Isobaths)), col = "gray40", lwd = 0.2) +
+    scale_linetype_manual( name = "Isobaths (m)", values = c("-100" = "solid", "-200" = "dotdash")) +
+# Prediction points
+    geom_point(
+      data = prediction,
+      aes(x = lon, y = lat, size = omega, color = omega),
+      alpha = 0.9,
+      shape = 19) +
+# Color scale
+    scale_color_gradient2(
+      low = "red", mid = "white", high = "blue",
+      midpoint = 0,
+      name = expression(omega[s]) ) +
+# Size scale proportional to omega
+    scale_size_continuous(
+      range = c(1, 4),
+      guide = "none") +
+    coord_sf(xlim = c(23.5, 26), ylim = c(39.3, 41)) +
+    labs(x = "Longitude", y = "Latitude") +
+    ggtitle(paste(m_code))+
+    theme_bw() +
+    theme(legend.position = "right")+
+    scale_x_continuous(breaks = seq(23.5, 26.5, by = 1))
+}
+
+# Plot
+plot0mega_m0<- plot_omega(pred_m0,"M0")
+plot0mega_m0
+```
+
+#### Plot spatiotemporal 
+``` {r} 
+plot_epsilon <- function(prediction,m_code) {
+  epsilon <- prediction$epsilon_st
+
+   ggplot() +
+     geom_sf(data = coast, fill = "gray60", col = "gray50") +
+     geom_sf(data = rivers, col = "steelblue", lwd = 0.5) +
+     geom_sf(data = isobath, aes(linetype = factor(Isobaths)),col = "gray40", lwd = 0.2) +
+    scale_linetype_manual(
+    name = "Isobaths (m)",
+    values = c("-100" = "solid", "-200" = "dotdash") ) +
+# Prediction points
+    geom_point(
+      data = prediction,
+      aes(x = lon, y = lat, size = epsilon_st, color = epsilon_st),
+      alpha = 0.9,
+      shape = 19) +
+#Color scale
+    scale_color_gradient2(
+      low = "red", mid = "white", high = "blue",
+      midpoint = 0,
+      name = expression(epsilon[st])) +
+# Size scale proportional to omega
+    scale_size_continuous(
+      range = c(1, 3),
+      guide = "none") +
+     
+    facet_wrap(~ Year) +
+    coord_sf(xlim = c(23.5, 26), ylim = c(39.3, 41)) +
+    labs(x = "Longitude", y = "Latitude") +
+    ggtitle(paste(m_code))+
+    theme_bw() +
+    theme(legend.position = "right")+
+    scale_x_continuous(breaks = seq(23.5, 26.5, by = 1))
+}
+
+# Plot M0
+plotEpsilon_m0<- plot_epsilon(pred_m0,"M0")
+plotEpsilon_m0
+```
+
+
+# Spatiotemporal models with enviromental covariates 
+### Model fit 
+```{r}
+####### Depth 
+fit_m1 <- sdmTMB(
+ eggs0_abu ~ 1 + (1|Year)+ s(Depth),
+  data = data.eggs,
+  mesh = bspde,
+  family = tweedie (link = "log"),
+  spatial = "on",
+  spatiotemporal = "IID",   
+  time = "time")
+
+# fit_m1b <- sdmTMB(
+#  eggs0_abu ~ 1+ (1|Year)+ (Depth),
+#   data = data.eggs,
+#   mesh = bspde,
+#   family = tweedie (link = "log"),
+#   spatial = "on",
+#   spatiotemporal = "IID",
+#   time = "time")
+
+sanity(fit_m1)
+#sanity(fit_m1b)
+#AIC(fit_m1, fit_m1b) 
+#     df      AIC
+# fit_m1   9 4867.910
+# fit_m1b  8 4869.392  ---> Choose smoother (fit_m1)
+
+######## SSS 
+fit_m2 <- sdmTMB(
+ eggs0_abu ~ 1 + (1|Year)+ s(Depth) + (SSS),
+  data = data.eggs,
+  mesh = bspde,
+  family = tweedie (link = "log"),
+  spatial = "on",
+  spatiotemporal = "IID",   
+  time = "time")
+ 
+# fit_m2b <- sdmTMB(
+#  eggs0_abu ~ 1 + (1|Year)+ s(Depth) + s(SSS),
+#   data = data.eggs,
+#   mesh = bspde,
+#   family = tweedie (link = "log"),
+#   spatial = "on",
+#   spatiotemporal = "IID",
+#   time = "time")
+
+sanity(fit_m2)
+#sanity(fit_m2b)
+#AIC(fit_m2, fit_m2b)  
+#         df      AIC
+# fit_m2  10 4841.781
+# fit_m2b 11 4842.632  ---> Choose linear (fit_m2)
+
+######## Other candidates #######
+fit_m_SSS_SST <- sdmTMB(
+  eggs0_abu ~ 1 + (1|Year)+ s(Depth) +SSS + SST,
+   data = data.eggs,
+   mesh = bspde,
+   family = tweedie (link = "log"),
+   spatial = "on",
+   spatiotemporal = "IID",   
+   time = "time")
+sanity(fit_m_SSS_SST)
+
+fit_mChla <- sdmTMB(
+  eggs0_abu ~ 1 + (1|Year)+ s(Depth) + CHL_extracted,
+   data = data.eggs,
+   mesh = bspde,
+   family = tweedie (link = "log"),
+   spatial = "on",
+   spatiotemporal = "IID",   
+   time = "time")
+
+sanity(fit_mChla)
+```
+
+### Diagnostics
+```{r}
+sanity(fit_m1)
+sanity(fit_m2)
+```
+
+### Results of the fit
+```{r}
+fit_m1
+fit_m2
+```
+
+### Residual cheking 
+```{r}
+# ---- m1 ----
+model=fit_m1
+  # Simulate and calculate residuals
+  s_fit_m1 <- simulate(model, nsim = 1000, type = "mle-mvn")
+  r_fit_m1 <- dharma_residuals(s_fit_m1, model, return_DHARMa = TRUE)
+  
+# Run DHARMa tests
+#QQ
+plotQQunif(r_fit_m1,testUniformity = F, testOutliers = F, testDispersion = F)
+
+#Residuals vs predicted
+plotResiduals(r_fit_m1)
+
+#Spatial autocorrelation
+simulationOutputS_m1 <- recalculateResiduals(
+    r_fit_m1,
+    group = paste(data.eggs$X, data.eggs$Y),
+    aggregateBy = mean)
+  
+DHARMa::testSpatialAutocorrelation(
+    simulationOutputS_m1,
+    x = unique(data.eggs$X),
+    y = unique(data.eggs$Y))
+
+# ---- m2 ----
+model=fit_m2
+  # Simulate and calculate residuals
+  s_fit_m2 <- simulate(model, nsim = 1000, type = "mle-mvn")
+  r_fit_m2 <- dharma_residuals(s_fit_m2, model, return_DHARMa = TRUE)
+  
+# Run DHARMa tests
+#QQ
+  plotQQunif(r_fit_m2,testUniformity = F, testOutliers = F, testDispersion = F)
+  
+#Residuals vs predicted
+DHARMa::plotResiduals(r_fit_m2)
+
+#Spatial autocorrelation
+simulationOutputS_m2 <- recalculateResiduals(
+    r_fit_m2,
+    group = paste(data.eggs$X, data.eggs$Y),
+    aggregateBy = mean
+  )
+  
+DHARMa::testSpatialAutocorrelation(
+    simulationOutputS_m2,
+    x = unique(data.eggs$X),
+    y = unique(data.eggs$Y))
+```
+
+
+### Full model prediction 
+``` {r} 
+#Predict in the prediction grid that has been created above
+pred_m1 <- predict(fit_m1, newdata = pred_grid)
+pred_m2 <- predict(fit_m2, newdata = pred_grid)
+
+plotP1<- plot_prediction(pred_m1,"M1: Depth") ; plotP1
+plotP2<- plot_prediction(pred_m2,"M2:Depth + SSS"); plotP2
+```
+
+### Plot temporal, spatial and spatiotemporal 
+``` {r} 
+#Temporal 
+year_re <- tidy(fit_m1, "ran_vals")
+plot_alpha_m1 <- plot_alpha(year_re) + ggtitle("M1: Depth") + ylim(-2,2)+xlab("")+ ylab("")
+plot_alpha_m1
+
+year_re <- tidy(fit_m2, "ran_vals")
+plot_alpha_m2 <- plot_alpha(year_re) + ggtitle("M2: Depth + SSS") + ylim(-2,2) +xlab("")+ ylab("")
+plot_alpha_m2
+
+#Spatial 
+plot0mega_m1<- plot_omega(pred_m1,"M1: Depth")
+plot0mega_m1
+
+plot0mega_m2<- plot_omega(pred_m2,"M2: Depth + SSS")
+plot0mega_m2
+
+#Spatiotemporal
+plotEpsilon_m1<- plot_epsilon(pred_m1,"M1: Depth")
+plotEpsilon_m1
+
+plotEpsilon_m2<- plot_epsilon(pred_m2,"M2: Depth + SSS")
+plotEpsilon_m2
+```
+
+### Conditional effects 
+```{r}
+#Model 1
+depth_m1 <- visreg(fit_m1, xvar = "Depth", gg = TRUE)
+depth_m1 <- depth_m1 +labs (title="M1: Depth") + theme_bw(); depth_m1
+
+fyear_m1 <- visreg(fit_m1, xvar = "Year",gg = TRUE) 
+fyear_m1 <- fyear_m1 + labs (title="M1: Depth") + theme_bw(); fyear_m1
+
+#Model 2
+depth_m2 <- visreg(fit_m2, xvar = "Depth", gg = TRUE)
+depth_m2 <- depth_m2 +labs(title="M2: Depth + SSS") + theme_bw(); depth_m2
+
+SSS_m2 <- visreg(fit_m2, xvar = "SSS", gg = TRUE)
+SSS_m2 <- SSS_m2 +labs(title="M2: Depth + SSS") + theme_bw(); SSS_m2
+
+fyear_m2 <- visreg(fit_m2, xvar = "Year",gg = TRUE) 
+fyear_m2 <- fyear_m2 + labs (title="M2: Depth + SSS") + theme_bw(); fyear_m2
+
+SSSdepth_2d_m2 <-  visreg2d(fit_m2, xvar = "Depth", yvar = "SSS", plot.type = "gg")
+SSSdepth_2d_m2 <- SSSdepth_2d_m2 +labs(title="M2: Depth + SSS")  + theme_bw() ;SSSdepth_2d_m2
+```
+
+# Spatiotemporal models with populational covariates 
+### Model fit 
+```{r}
+fit_m3 <- sdmTMB(
+ eggs0_abu ~ 1 + (1|Year)+ s(Depth) + SSS + Acoustic_Biomas ,
+ spatial_varying = ~ Acoustic_Biomas ,
+  data = data.eggs,
+  mesh = bspde,
+  family = tweedie (link = "log"),
+  spatial = "on",
+  spatiotemporal = "IID",   
+  time = "time")
+#Sanity not pass because of Var_Year ~=0 
+
+# fit_mTL <- sdmTMB(
+#  eggs0_abu ~ 1 + (1|Year)+ s(Depth) + SSS + TL_cm ,
+#  spatial_varying = ~ TL_cm ,
+#   data = data.eggs,
+#   mesh = bspde,
+#   family = tweedie (link = "log"),
+#   spatial = "on",
+#   spatiotemporal = "IID",   
+#   time = "time")
+
+fit_m4 <- sdmTMB(
+ eggs0_abu ~ 1 + s(Depth) + SSS + Acoustic_Biomas ,
+ spatial_varying = ~ Acoustic_Biomas ,
+  data = data.eggs,
+  mesh = bspde,
+  family = tweedie (link = "log"),
+  spatial = "on",
+  spatiotemporal = "IID",   
+  time = "time")
+```
+
+### Diagnostics
+```{r}
+sanity(fit_m3)
+sanity(fit_m4)
+```
+
+### Results of the fit
+```{r}
+fit_m3
+fit_m4
+```
+
+### Residual cheking 
+```{r}
+# ---- m4 ----
+model=fit_m4
+  # Simulate and calculate residuals
+  s_fit_m4 <- simulate(model, nsim = 1000, type = "mle-mvn")
+  r_fit_m4 <- dharma_residuals(s_fit_m4, model, return_DHARMa = TRUE)
+  
+  # Run DHARMa tests
+#QQ
+plotQQunif(r_fit_m4,testUniformity = F, testOutliers = F, testDispersion = F)
+   
+#Residuals vs predicted
+DHARMa::plotResiduals(r_fit_m4)
+  
+#Spatial autocorralation
+simulationOutputS_m4 <- recalculateResiduals(
+    r_fit_m4,
+    group = paste(data.eggs$X, data.eggs$Y),
+    aggregateBy = mean
+  )
+  
+DHARMa::testSpatialAutocorrelation(
+    simulationOutputS_m4,
+    x = unique(data.eggs$X),
+    y = unique(data.eggs$Y))
+```
+
+### Full model prediction 
+``` {r} 
+#Predict in the prediction grid that has been created above
+pred_m3 <- predict(fit_m3, newdata = pred_grid)
+pred_m4 <- predict(fit_m4, newdata = pred_grid)
+
+plotP3<- plot_prediction(pred_m3,"M3: Depth + SSS + TB")
+plotP3
+
+plotP4<- plot_prediction(pred_m4,"M4: Depth + SSS + TB")
+plotP4
+```
+
+### Plot temporal, spatial and spatiotemporal  
+``` {r} 
+#Temporal 
+year_re <- tidy(fit_m3, "ran_vals")
+plot_alpha_m3 <- plot_alpha(year_re) + ggtitle("M4: Depth + SSS + TB") + ylim(-2,2) +xlab("")+ ylab("")
+plot_alpha_m3
+
+#Spatial 
+plot0mega_m3<- plot_omega(pred_m3,"M3: Depth + SSS + TB")
+plot0mega_m3
+
+plot0mega_m4<- plot_omega(pred_m4,"M4: Depth + SSS + TB")
+plot0mega_m4
+
+#Spatiotemporal
+plotEpsilon_m3<- plot_epsilon(pred_m3,"M3: Depth + SSS + TB")
+plotEpsilon_m3
+
+plotEpsilon_m4<- plot_epsilon(pred_m4,"M4: Depth + SSS +TB")
+plotEpsilon_m4
+```
+
+### SVC effect 
+``` {r,} 
+# --- m4 ----
+ coefs <- tidy(fit_m4, conf.int = TRUE)
+ scaled_Acoustic_coef <- coefs$estimate[coefs$term == "Acoustic_Biomas"]
+ 
+plot_SVC_m4<- 
+  ggplot()+
+   geom_sf(data = coast, fill = "gray60", col = "gray50") +
+   geom_sf(data = rivers, col = "steelblue", lwd = 0.5) +
+   geom_sf(data = isobath, aes(linetype = factor(Isobaths)),col = "gray40", lwd = 0.2) +
+   scale_linetype_manual( name = "Isobaths (m)",values = c("-100" = "solid", "-200" = "dotdash"), guide= "none") +
+# Prediction points
+  geom_point(
+      data = pred_m4,
+      aes(x = lon, y = lat, size = (pred_m4$zeta_s_Acoustic_Biomas) , color = (pred_m4$zeta_s_Acoustic_Biomas)),
+      alpha = 0.9,shape = 19) +
+# Color scale
+    scale_color_gradient2(
+      low = "red", mid = "white", high = "blue",
+      midpoint = 0,
+      name = "f(TB)",
+      labels = scales::label_number(accuracy = 0.001)) +
+# Size scale proportional to omega
+    scale_size_continuous(
+      range = c(0.5,2.5),
+      guide = "none") +
+    
+ coord_sf(xlim = c(23.5, 26.4), ylim = c(39.3, 41)) +    
+ labs(x = "Longitude", y = "Latitude") +
+ ggtitle(paste("M4: Depth + SSS + TB"))+
+ theme_bw() +
+ scale_x_continuous(breaks = seq(23, 26, by = 1))+
+ theme(legend.position = "right")
+
+plot_SVC_m4
+```
+
+### Conditional effects from populational models 
+```{r}
+#Model 4
+depth_m4 <- visreg(fit_m4, xvar = "Depth", gg = TRUE)
+depth_m4 <- depth_m4 +labs(title="M4: Depth + SSS + TB") + theme_bw(); depth_m4
+
+SSS_m4 <- visreg(fit_m4, xvar = "SSS", gg = TRUE)
+SSS_m4  <- SSS_m4 +labs(title="M4: Depth + SSS + TB") + theme_bw(); SSS_m4
+
+TB_m4 <- visreg(fit_m4, xvar = "Acoustic_Biomas", gg = TRUE)
+TB_m4 <- TB_m4 +labs(title="M4: Depth + SSS + TB" , x="TB", y="f(TB)") + theme_bw(); TB_m4
+
+#2D conditional effects 
+SSSdepth_2d_m4 <-  visreg2d(fit_m4, yvar = "SSS", xvar = "Depth", plot.type = "gg") 
+SSSdepth_2d_m4 <-  SSSdepth_2d_m4 + labs(tite="M4: Depth + SSS + TB")  + theme_bw() 
+
+TBdepth_2d_m4 <- visreg2d(fit_m4,xvar = "Depth", yvar = "Acoustic_Biomas", plot.type = "gg")
+TBdepth_2d_m4 <- TBdepth_2d_m4 + labs(tite="M4: Depth + SSS + TB", y="TB") + guides(fill = guide_colorbar(title = "f(Depth,TB)")) + theme_bw() ;TBdepth_2d_m4
+
+TBSSS_2d_m4 <-  visreg2d(fit_m4, xvar = "SSS", yvar = "Acoustic_Biomas", plot.type = "gg")
+TBSSS_2d_m4 <- TBSSS_2d_m4 +labs(tite="M4: Depth + SSS + TB", y= "TB")+ guides(fill = guide_colorbar(title = "f(SSS,TB)")) + theme_bw() ;TBSSS_2d_m4
+```
+
+## Model comparison 
+```{r}
+models <- list(M0 = fit_m0,
+               M1 = fit_m1,
+               M2 = fit_m2,
+               M3 = fit_m3,
+               M4 = fit_m4,
+               M_SST = fit_m_SSS_SST,
+               M_CHLA = fit_mChla)
+                 
+model_cov<- data.frame( model= c("M0","M1","M2","M3", "M4", "M_SST", "M_CHLA"),
+                        model_candidates= 
+                              c("(1|Year)+ ω + ε",
+                                "(1|Year)+ ω + ε + s(Depth)",
+                                "(1|Year)+ ω + ε + s(Depth) + SSS",
+                                "(1|Year)+ ω + ε + s(Depth) + SSS + Acoustic_svc",
+                                "          ω + ε + s(Depth) + SSS + Acoustic_svc ",
+                                "(1|Year)+ ω + ε + s(Depth) + SSS + SST",
+                                "(1|Year)+ ω + ε + s(Depth) + Chla"))
+
+AIC_df <- tibble(
+  model = names(models),
+  AIC = sapply(models, AIC)
+) %>% mutate(ΔAIC = AIC - min(AIC))
+
+
+cAIC_df <- tibble(
+    model = names(models),
+    cAIC = sapply(models, function(m) {
+     out <- cAIC(m)
+     if (is.list(out)) out$caic else out
+     })
+    ) %>% mutate(ΔcAIC = cAIC - min(cAIC))
+
+
+ran_pars_df <- bind_rows(
+  lapply(names(models), function(nm) {
+    tidy(models[[nm]], "ran_pars") %>%
+      filter(term %in% c("sigma_O","sigma_E")) %>%
+      select(term, estimate) %>%
+      pivot_wider(names_from = term, values_from = estimate) %>%
+      mutate(model = nm)
+  }) 
+)
+
+
+get_year_sd_from_summary <- function(m) {
+  # Capture summary output as text
+  s <- capture.output(summary(m))
+  
+  # Find the line with "Year (Intercept)"
+  idx <- grep("Year \\(Intercept\\)", s)
+  if (length(idx) == 0) return(NA_real_)
+  
+  # Extract numbers from that line
+  nums <- regmatches(s[idx[1]], gregexpr("[-+]?[0-9]*\\.?[0-9]+", s[idx[1]]))[[1]]
+  
+  # The last number is SD, the second-to-last is Variance
+  sd_val <- as.numeric(nums[length(nums)])
+  
+  return(sd_val)
+}
+
+year_sd_df <- tibble(
+  model = names(models),
+ sigma_Year = sapply(models, get_year_sd_from_summary))
+
+metrics_df <- model_cov %>%
+  left_join(cAIC_df, by = "model") %>%
+  left_join(ran_pars_df, by = "model") %>%
+  left_join(year_sd_df, by = "model") %>%  
+  full_join(AIC_df, by = "model") 
+
+print(metrics_df)
+
+#Percentage of deviance explained 
+fit_mNull <- sdmTMB(eggs0_abu ~ 1, spatial = "off", data = data.eggs, family = tweedie (link = "log"), mesh = bspde)
+
+#Deviance compared to null 
+dev_explained_m0    <- 1 - deviance(fit_m0) / deviance(fit_mNull)
+dev_explained_m1    <- 1 - deviance(fit_m1) / deviance(fit_mNull)
+dev_explained_m2    <- 1 - deviance(fit_m2) / deviance(fit_mNull) 
+dev_explained_m3    <- 1 - deviance(fit_m3) / deviance(fit_mNull) 
+dev_explained_m4    <- 1 - deviance(fit_m4) / deviance(fit_mNull) 
+dev_explained_mSST  <- 1 - deviance(fit_m_SSS_SST) / deviance(fit_mNull) 
+dev_explained_mChla <- 1 - deviance(fit_mChla ) / deviance(fit_mNull) 
+
+#Deviance compared to the previous simpler 
+dev_explainedm0_m0 <- 1 - deviance(fit_m0) / deviance(fit_m0)
+dev_explainedm0_m1 <- 1 - deviance(fit_m1) / deviance(fit_m0)
+dev_explainedm1_m2 <- 1 - deviance(fit_m2) / deviance(fit_m1) 
+dev_explainedm2_m3 <- 1 - deviance(fit_m3) / deviance(fit_m2) 
+dev_explainedm3_m4 <- 1 - deviance(fit_m4) / deviance(fit_m3) 
+dev_explainedm2_mSST <- 1 - deviance(fit_m_SSS_SST) / deviance(fit_m2) 
+dev_explainedm1_mChla<- 1 - deviance(fit_mChla)/ deviance(fit_m1) 
+
+metrics_df$deviance_null<- 
+c(
+dev_explained_m0,
+dev_explained_m1,
+dev_explained_m2,
+dev_explained_m3,
+dev_explained_m4,
+dev_explained_mSST,
+dev_explained_mChla)
+
+metrics_df$deviance_prev<- 
+c(
+dev_explainedm0_m0,
+dev_explainedm0_m1,
+dev_explainedm1_m2,
+dev_explainedm2_m3,
+dev_explainedm3_m4,
+dev_explainedm2_mSST,
+dev_explainedm1_mChla)
+
+SumTable1 <- metrics_df %>% filter(model %in% c("M0","M1","M2","M3","M4"))
+print(SumTable1 %>% mutate(across(where(is.numeric), ~ round(.x, 2))))
+```
+
+### Extra paper Figures
+### Figure temporal
+```{r}
+# --- Time across models -----------
+plots_grid <- plot_grid(plot_alpha_m0,
+                        plot_alpha_m1,
+                        plot_alpha_m2,
+                        plot_alpha_m3,
+                        ncol = 2,
+                        #labels = c("A","B","C","D"),
+                        label_fontfamily = "Helvetica")
+```
+
+### Figure spatial 
+```{r}
+# --- Omega across models -----------
+all_omega <- c(pred_m0$omega_s, pred_m1$omega_s,
+                 pred_m2$omega_s, pred_m4$omega_s)
+
+color_limits <- c(min(all_omega, na.rm = TRUE),
+                  max(all_omega, na.rm = TRUE)) 
+
+plot_O_pub <- function(prediction, m_code, legend = TRUE) {
+
+  p<- ggplot() +
+  geom_sf(data = coast, fill = "gray60", col = "gray50") +
+  geom_sf(data = rivers, col = "steelblue", lwd = 0.5) +
+  geom_sf(data = isobath, aes(linetype = factor(Isobaths)),
+            color = "gray40", linewidth = 0.4) +
+  scale_linetype_manual(values = c("-100" = "solid", "-200" = "dotdash"), name = "Isobaths (m)") +
+    geom_point(
+      data = prediction,
+      aes(x = lon, y = lat, size = omega_s, color = omega_s),
+      alpha = 0.9, shape = 19 ) +
+  scale_color_gradient2(
+      low = "red", mid = "white", high = "blue",
+      midpoint = 0, 
+      name = expression(omega[s]),
+      breaks = c(-2, 0, 2, 3),        # manual breaks
+      labels = c(-2, 0, 2, 3)) +
+  scale_size_continuous(range = c(0.5, 1.8), guide = "none") +
+  coord_sf(xlim = c(23.5, 26.4), ylim = c(39.2, 41.1)) +
+  labs(x = "Longitude", y = "Latitude", title = m_code) +
+  scale_x_continuous(breaks = seq(23, 26, by = 1))  +theme_bw(base_size = 10) # just a slitly smaller
+
+  if(!legend) {
+   p <- p + theme(legend.position = "none")
+  }
+    print(p)
+}
+  
+ploto0 <- plot_O_pub(pred_m0, "M0", legend = TRUE)   # keep legend
+ploto1 <- plot_O_pub(pred_m1, "M1: Depth", legend = FALSE)
+ploto2 <- plot_O_pub(pred_m2, "M2: Depth + SSS", legend = FALSE)
+#ploto3 <- plot_O_pub(pred_m3, "M3: Depth + SSS + TSB", legend = FALSE)
+ploto4 <- plot_O_pub(pred_m4, "M4: Depth + SSS + TB", legend = FALSE)
+
+omega_lend <- get_legend(ploto0 + theme(legend.position = "bottom"))
+plots_grid <- plot_grid(ploto0 + theme(legend.position = "none"),
+                        ploto1,
+                        ploto2,
+                        ploto4,
+                        ncol = 2,
+                        label_fontfamily = "Helvetica")
+
+# Stack vertical legends on the right
+final_plot_omega <- plot_grid(
+  plots_grid,
+  omega_lend,
+  ncol = 1,         # stack vertically
+  rel_heights = c(1, 0.1) ) # legend takes less space
+
+final_plot_omega
+```
+
+### Figure Spatiotemporal
+```{r}
+#Define consistent color scale limits across all plots
+all_epsilon <- c(pred_m0$epsilon_st, pred_m1$epsilon_st,
+                 pred_m2$epsilon_st, pred_m4$epsilon_st)
+
+color_limits <- c(min(all_epsilon, na.rm = TRUE),
+                  max(all_epsilon, na.rm = TRUE))
+
+plot_E_pub <- function(prediction,m_code,  legend = TRUE) {
+  epsilon <- prediction$epsilon_st
+
+ p<-  ggplot() +
+   geom_sf(data = coast, fill = "gray60", col = "gray50") +
+   geom_sf(data = rivers, col = "steelblue", lwd = 0.5) +
+   geom_sf(data = isobath, aes(linetype = factor(Isobaths)), color = "gray40", linewidth = 0.2) +
+      scale_linetype_manual(values = c("-100" = "solid", "-200" = "dotdash"), name = "Isobaths (m)") +
+# Prediction points
+  geom_point(
+      data = prediction,
+      aes(x = lon, y = lat, size = epsilon_st, color = epsilon_st),
+      alpha = 1, shape = 19) 
+# Color scale
+ scale_color_gradient2(
+  low = "red", mid = "white", high = "blue",
+  midpoint = 0,
+  limits = color_limits,
+  name = expression(epsilon[st]),
+  breaks = c(-2, 0, 2, 3),        # manual breaks
+  labels = c(-2, 0, 2, 3))+
+scale_size_continuous(range = c(0.2, 1.5), guide = "none") +
+ facet_wrap(~ Year) +
+ coord_sf(xlim = c(23.5, 26.4), ylim = c(39.2, 41.1)) +
+labs(x = "Longitude", y = "Latitude", title = m_code) +
+theme_bw(base_size = 9)+  # use consistent style
+scale_x_continuous(breaks = seq(23, 26, by = 1))
+  
+ if(!legend) {
+   p <- p + theme(legend.position = "none")
+  }
+    print(p)
+}
+
+plotE0 <- plot_E_pub(pred_m0, "M0", legend = TRUE)   # keep legend
+plotE1 <- plot_E_pub(pred_m1, "M1: Depth", legend = FALSE)
+plotE2 <- plot_E_pub(pred_m2, "M2: Depth + SSS", legend = FALSE)
+#plotE3 <- plot_E_pub(pred_m3, "M3: Depth + SSS + TB", legend = FALSE)
+plotE4 <- plot_E_pub(pred_m4, "M4: Depth + SSS + TB", legend = FALSE)
+
+epsilon_legend <- get_legend(plotE0 + theme(legend.position = "bottom"))
+
+plots_grid <- plot_grid(plotE0 + theme(legend.position = "none"),
+                        plotE1,
+                        plotE2,
+                        plotE4,
+                        ncol = 2,
+                       label_fontfamily = "Helvetica")
+
+# Stack vertical legends on the right
+final_plot_epsilon <- plot_grid(
+  plots_grid,
+  epsilon_legend,
+  ncol = 1,         # stack vertically
+  rel_heights = c(1, 0.1))  # legend takes less space
+
+final_plot_epsilon
+```
+
+### Conditional effects plots (Figure 4)
+```{r}
+#--- M4 Simple ----
+depth_m4 <- depth_m4 + ggtitle("Depth") + xlab("z-Depth") +theme_bw(base_size = 9)
+SSS_m4  <- SSS_m4   + ggtitle("SSS")  + xlab("z-SSS") + theme_bw(base_size = 9)
+TB_m4 <- TB_m4   + ggtitle("TB") + xlab("z-TB") + theme_bw(base_size = 9)
+plot_SVC_m4 <- plot_SVC_m4  +  ggtitle(expression(zeta[TB])) + theme_bw(base_size = 9)
+plot_SVC_m4 <- plot_SVC_m4  +  theme(
+  legend.key.width = unit(0.8, "cm"),   # wider colorbar
+  legend.key.height = unit(0.2, "cm"))   # optional: height for horizontal bar
+  
+legend_svc <- get_legend(
+  plot_SVC_m4 + 
+  theme(legend.position = "bottom"))
+
+plot_SVC_m4 <- plot_SVC_m4 + theme(legend.position = "none")
+
+# Stack the SVC plot and its legend
+plot_SVC_m4_combined <- plot_grid(
+  plot_SVC_m4,
+  legend_svc,
+  ncol = 1,
+  rel_heights = c(1, 0.12))  # adjust legend height
+  
+effects_M4 <- plot_grid(
+ depth_m4, SSS_m4, TB_m4, plot_SVC_m4_combined,
+   label_size = 9,
+  #labels = c("A","B","C","D"),
+   label_fontfamily = "Helvetica",# use combined plot here
+   ncol = 2)
+effects_M4
+```
+
+
+
+### Combined 3D effect plots (Figure 5)
+```{r}
+#3D conditional effects using visreg - plots have been mased out, rugs added and effects are centered to zero.
+
+#2D conditional effects 
+SSSdepth_2d_m4 <-  visreg2d(fit_m4, yvar = "SSS", xvar = "Depth", plot.type = "image") 
+
+# 2. Flatten the x, y vectors and z matrix into a data frame
+grid_df <- expand.grid(Depth = SSSdepth_2d_m4$x, SSS = SSSdepth_2d_m4$y)
+grid_df$visregFit <- as.vector(SSSdepth_2d_m4$z)
+
+# 3. Define the boundary of your real environmental space from data.eggs
+real_points <- st_as_sf(data.eggs, coords = c("Depth", "SSS"), remove = FALSE)
+environmental_boundary <- st_convex_hull(st_union(real_points))
+
+# 4. Convert visreg's expanded grid points into a spatial object to check them
+grid_points <- st_as_sf(grid_df, coords = c("Depth", "SSS"), remove = FALSE)
+
+# 5. Figure out which grid points fall inside your real data boundary
+grid_points$inside <- st_intersects(grid_points, environmental_boundary, sparse = FALSE)[, 1]
+
+# 6. Mask out the ghost areas by setting their predicted fit to NA
+grid_df$z_masked <- ifelse(grid_points$inside, grid_df$visregFit, NA)
+
+# 7. Plot the clean, masked surface using ggplot2
+SSSdepth_2d_m4_masked<- ggplot(grid_df, aes(x = Depth, y = SSS, fill = z_masked)) +
+  geom_raster() +
+  geom_contour(aes(z =z_masked), color = NA, alpha = 0.2) + 
+  scale_fill_gradient2(low = "blue", 
+                       mid = "white", 
+                       high = "red", 
+                       midpoint = 0, # Centers the white color
+                       name = "f(Depth,SSS)", 
+                       na.value = "transparent") + scale_x_continuous(breaks=c (-1,0,1,2,3,4,5))+
+  labs(title = "Depth + SSS",
+       x = "z-Depth",
+       y = "z-SSS") +theme_minimal(base_size = 8)+
+     theme(legend.position = "bottom",legend.key.height = unit(0.4, "cm"),legend.key.width = unit(0.4,"cm"))
+  
+
+TBdepth_2d_m4 <- visreg2d(fit_m4,xvar = "Depth", yvar = "Acoustic_Biomas", plot.type = "image")
+
+grid_df <- expand.grid(Depth = TBdepth_2d_m4$x, Acoustic_Biomas = TBdepth_2d_m4$y)
+grid_df$visregFit <- as.vector(TBdepth_2d_m4$z)
+real_points <- st_as_sf(data.eggs, coords = c("Depth", "Acoustic_Biomas"), remove = FALSE)
+environmental_boundary <- st_convex_hull(st_union(real_points))
+
+grid_points <- st_as_sf(grid_df, coords = c("Depth", "Acoustic_Biomas"), remove = FALSE)
+grid_points$inside <- st_intersects(grid_points, environmental_boundary, sparse = FALSE)[, 1]
+grid_df$z_masked <- ifelse(grid_points$inside, grid_df$visregFit, NA)
+
+TBdepth_2d_m4_masked<- ggplot(grid_df, aes(x = Depth, y = Acoustic_Biomas, fill = z_masked)) +
+  geom_raster() +
+  geom_contour(aes(z = z_masked), color = NA, alpha = 0.2) +
+  scale_fill_gradient2(low = "blue", 
+                       mid = "white", 
+                       high = "red", 
+                       midpoint = 0, # Centers the white color
+                       name = "f(Depth,TB)", 
+                       na.value = "transparent")  + scale_x_continuous(breaks=c (-1,0,1,2,3,4,5))+
+  labs(title = "Depth + TB",
+       x = "z-Depth",
+       y = "z-TB") +
+  theme_minimal(base_size = 8) +
+  theme(legend.position = "bottom",legend.key.height = unit(0.4, "cm"),legend.key.width = unit(0.4,"cm"))
+
+TBSSS_2d_m4 <-  visreg2d(fit_m4, xvar = "SSS", yvar = "Acoustic_Biomas", plot.type = "image")
+
+grid_df <- expand.grid(SSS = TBSSS_2d_m4$x, Acoustic_Biomas = TBSSS_2d_m4$y)
+grid_df$visregFit <- as.vector(TBSSS_2d_m4$z)
+real_points <- st_as_sf(data.eggs, coords = c("SSS", "Acoustic_Biomas"), remove = FALSE)
+environmental_boundary <- st_convex_hull(st_union(real_points))
+grid_points <- st_as_sf(grid_df, coords = c("SSS", "Acoustic_Biomas"), remove = FALSE)
+grid_points$inside <- st_intersects(grid_points, environmental_boundary, sparse = FALSE)[, 1]
+grid_df$z_masked <- ifelse(grid_points$inside, grid_df$visregFit, NA)
+
+TBSSS_2d_m4_masked<- ggplot(grid_df, aes(x = SSS, y = Acoustic_Biomas, fill = z_masked)) +
+  geom_raster() +
+  geom_contour(aes(z = z_masked), color = NA, alpha = 0.2) +
+  scale_fill_gradient2(low = "blue", 
+                       mid = "white", 
+                       high = "red", 
+                       midpoint =0, # Centers the white color
+                       name = "f(SSS,TB)", 
+                       na.value = "transparent") +
+  labs(title = "SSS + TB",
+       x = "z-SSS",
+       y = "z-TB") +
+  theme_minimal(base_size = 8)+
+  theme(legend.position = "bottom",legend.key.height = unit(0.4, "cm"),legend.key.width = unit(0.4,"cm"))
+ 
+effects_com_M4_masked <- plot_grid(
+  SSSdepth_2d_m4_masked, TBdepth_2d_m4_masked, TBSSS_2d_m4_masked,   # use combined plot here
+  nrow =1 ,
+  label_size = 9,
+  label_fontfamily = "Helvetica"
+)
+
+effects_com_M4_masked_rugs <- plot_grid(
+  SSSdepth_2d_m4_masked + geom_rug(data = data.eggs, aes(x = Depth, y = SSS), 
+           color = "gray50", alpha = 0.5, inherit.aes = FALSE, sides ="bl"), # "bl" means bottom and left axes, 
+ TBdepth_2d_m4_masked + geom_rug(data = data.eggs, aes(x = Depth, y = Acoustic_Biomas), 
+           color = "gray50", alpha = 0.5, inherit.aes = FALSE,sides ="bl"), 
+ TBSSS_2d_m4_masked + geom_rug(data = data.eggs, aes(x = SSS, y = Acoustic_Biomas), color = "gray50", 
+                                alpha = 0.5,inherit.aes = FALSE,sides ="bl"), nrow =1 ,
+ label_size = 9, 
+ # labels = c("A","B","C"),
+ label_fontfamily = "Helvetica"
+)
+
+effects_com_M4_masked_rugs
+```

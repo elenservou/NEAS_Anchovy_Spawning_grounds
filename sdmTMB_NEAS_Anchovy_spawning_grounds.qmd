@@ -529,35 +529,9 @@ final_CHL <- ggdraw() +
 final_CHL
 ```
 
-#### TL 
-```{r}
-mean_Ab <- mean(data.eggs$TL_cm, na.rm = TRUE)
-sd_Ab   <- sd(data.eggs$TL_cm, na.rm = TRUE)
-to_std   <- function(x) (x - mean_Ab) / sd_Ab
-
-
-TL <- ggplot(data.eggs, aes(x = (Year), y = TL_cm)) +
-  # geom_errorbar(data = data.eggs, aes(x =(Year), y= TL_cm, ymin = (data.eggs$TL_cm - 1.96*data.eggs$TL_se) , ymax = (data.eggs$TL_cm +       1.96*data.eggs$TL_se)), width=0.3,linewidth=0.3)+  
-  geom_point(alpha = 0.7,fill = "blue", pch = 21,  size = 0.8) +
-  scale_y_continuous(
-    name = "TL (cm)",
-    sec.axis = sec_axis(~ to_std(.), name = "Standardized TL")) +
-    xlab("") + ylab("") +
-    theme_bw() +
-  theme(legend.position = "none", 
-        axis.text.x = element_text(angle = 45, hjust = 1), 
-        axis.text.y = element_text())
-TL
-```
-
 ### Covariates Collinearity exploration  
 ```{r}
 # Annual means 
-mean_TL<- data.eggs %>%
-  group_by(Year) %>%
-  summarise(TL = mean(TL_cm, na.rm = TRUE)) %>%
-  arrange(Year)
-
 mean_SSS<- data.eggs %>%
   group_by(Year) %>%
   summarise(SSS = mean(SSS, na.rm = TRUE)) %>%
@@ -634,35 +608,6 @@ ggplot(data = NULL, aes(y = data.eggs$CHL_extracted, x = data.eggs$Depth)) +
   theme_bw()
 
 #Annuals
-ggplot(data = NULL, aes(x = mean_TL$TL, y = mean_Acoustic$Acoustic_Biomas)) +
-  geom_point(color = "steelblue", size = 3) +
-  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
-      geom_text(aes(label = mean_TL$Year),vjust = -1, size = 2) +
-  labs(
-    x = "Mean Length",
-    y = "Acoustic Biomass",
-    subtitle = paste("Pearson correlation =", round(cor(mean_TL$TL, mean_Acoustic$Acoustic_Biomas, use = 'everything'), 2))) +
-  theme_bw()
-
-ggplot(data = NULL, aes(x = mean_TL$TL, y = mean_SSS$SSS)) +
-  geom_point(color = "steelblue", size = 3) +
-  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
-  labs(
-    x = "Mean Length",
-    y = "SSS",
-    subtitle = paste("Pearson correlation =", round(cor(mean_TL$TL, mean_SSS$SSS, use = 'complete.obs'), 2))) +
-  theme_bw()
-
-ggplot(data = NULL, aes(x = mean_TL$TL, y = mean_SST$SST)) +
-  geom_point(color = "steelblue", size = 3) +
-  geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
-      geom_text(aes(label = mean_SST$Year), vjust = -1, size = 2) +
-  labs(
-    x = "Mean Length",
-    y = "SST",
-    subtitle = paste("Pearson correlation =", round(cor(mean_TL$TL, mean_SST$SST, use = 'complete.obs'), 2))) +
-  theme_bw()
-
 ggplot(data = NULL, aes(x = mean_Acoustic$Acoustic_Biomas, y = mean_SSS$SSS)) +
   geom_point(color = "steelblue", size = 3) +
   geom_smooth(method = "lm", se = FALSE, color = "red", linetype = "dashed") +
@@ -686,7 +631,7 @@ ggplot(data = NULL, aes(x = mean_Acoustic$Acoustic_Biomas, y = mean_SST$SST)) +
 ## Standardize you data covariates before the models
 ```{r}
 data.eggs <- data.eggs %>%
-  mutate(across(c("SSS","Depth","SST","TL_cm","Acoustic_Biomas","CHL_extracted"), ~ scale(.)[, 1]))
+  mutate(across(c("SSS","Depth","SST","Acoustic_Biomas","CHL_extracted"), ~ scale(.)[, 1]))
 ```
 
 ## Create the mesh
@@ -1227,16 +1172,6 @@ fit_m3 <- sdmTMB(
   time = "time")
 #Sanity not pass because of Var_Year ~=0 
 
-# fit_mTL <- sdmTMB(
-#  eggs0_abu ~ 1 + (1|Year)+ s(Depth) + SSS + TL_cm ,
-#  spatial_varying = ~ TL_cm ,
-#   data = data.eggs,
-#   mesh = bspde,
-#   family = tweedie (link = "log"),
-#   spatial = "on",
-#   spatiotemporal = "IID",   
-#   time = "time")
-
 fit_m4 <- sdmTMB(
  eggs0_abu ~ 1 + s(Depth) + SSS + Acoustic_Biomas ,
  spatial_varying = ~ Acoustic_Biomas ,
@@ -1714,7 +1649,7 @@ SSSdepth_2d_m4_masked<- ggplot(grid_df, aes(x = Depth, y = SSS, fill = z_masked)
                        mid = "white", 
                        high = "red", 
                        midpoint = 0, # Centers the white color
-                       name = "f(Depth,SSS)", 
+                       name = "f(Depth) + f(SSS)", 
                        na.value = "transparent") + scale_x_continuous(breaks=c (-1,0,1,2,3,4,5))+
   labs(title = "Depth + SSS",
        x = "z-Depth",
@@ -1740,7 +1675,7 @@ TBdepth_2d_m4_masked<- ggplot(grid_df, aes(x = Depth, y = Acoustic_Biomas, fill 
                        mid = "white", 
                        high = "red", 
                        midpoint = 0, # Centers the white color
-                       name = "f(Depth,TB)", 
+                       name = "f(Depth) + f(TB)", 
                        na.value = "transparent")  + scale_x_continuous(breaks=c (-1,0,1,2,3,4,5))+
   labs(title = "Depth + TB",
        x = "z-Depth",
@@ -1765,7 +1700,7 @@ TBSSS_2d_m4_masked<- ggplot(grid_df, aes(x = SSS, y = Acoustic_Biomas, fill = z_
                        mid = "white", 
                        high = "red", 
                        midpoint =0, # Centers the white color
-                       name = "f(SSS,TB)", 
+                       name = "f(SSS) + f(TB)", 
                        na.value = "transparent") +
   labs(title = "SSS + TB",
        x = "z-SSS",

@@ -81,4 +81,7 @@ Other R packages used are specified within the code files.
 
 The data provided in this repository were collected as part of the Greek National Program for the Collection of Fisheries Data (co-funded by the Greek Ministry of Rural Development and Food and the European Union) and are made available for the purpose of reproducing the analyses presented in the associated publication. 
 
-*Please do not use or redistribute the data for analyses or purposes outside the scope of this work without contacting the authors*
+*Please do not use the data for analyses or purposes outside the scope of this work without contacting the authors*
+
+## Acknowledgments 
+Authors would also like to thank Mathieu Woillez for his help in implementing the physical barrier mesh in the analysis.

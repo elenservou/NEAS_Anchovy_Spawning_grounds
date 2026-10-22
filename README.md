@@ -26,9 +26,9 @@ In dynamic ecosystems, understanding the spatiotemporal variability of fish spaw
 
 This study analyzed available egg density data from the North-East Aegean Sea (NEAS), collected between 2003 and 2022, to investigate interannual variations in European anchovy (*Engraulis encrasicolus*) spawning grounds and to assess the influence of environmental and density-dependent processes on their spatiotemporal dynamics.
 
-Using a spatiotemporal generalized additive mixed-effects modeling (GAMM) framework, we partitioned variability into stable spatial patterns, temporal variability, space–time interactions, and covariate effects. Environmental covariates were selected to represent the pronounced topographic, hydrological, and biological heterogeneity of the NEAS.
+Using a spatiotemporal generalized additive mixed-effects modeling (GAMM) framework, we partitioned variability into stable spatial patterns, temporal variability, space–time interactions, and covariate effects. Covariates were selected to represent the pronounced topographic, hydrological, and biological heterogeneity of the NEAS.
 
-Spawning grounds exhibited strong spatial persistence, characterized by a stable spatial pattern with higher egg density over the continental shelf and lower density offshore. Bathymetry and sea surface salinity emerged as key drivers of spatial and spatiotemporal variability, while population biomass primarily accounted for temporal variability in egg density. The spatially varying effect of biomass revealed density-dependent spatial dynamics, consistent with the basin model theory.
+Spawning grounds exhibited strong spatial persistence, characterized by higher egg density over the continental shelf and lower density offshore. Bathymetry and sea surface salinity emerged as key drivers of spatial and spatiotemporal variability, while population biomass primarily accounted for temporal variability in egg density. The spatially varying effect of biomass revealed density-dependent spatial dynamics, consistent with the basin model theory.
 
 Our findings indicate that anchovy spawning ground dynamics in the NEAS are driven by specific topographic and oceanographic features and biomass-dependent processes, while also highlighting the potential role of additional mechanisms, including behavioral processes such as spawning aggregation and site fidelity.
 
